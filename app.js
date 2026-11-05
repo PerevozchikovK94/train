@@ -680,7 +680,7 @@ async function initCloud() {
 }
 async function afterSignIn() {
   await sync();
-  const st = await fn('cal-status'); if (!st.error) cloud.cals = st.calendars;
+  const st = await fn('cal-status'); if (!st.error) { cloud.cals = st.calendars; cloud.google = st.google; }
   render();
   if (cloud.cals?.length) await loadBusy(view.wk);
   await loadActs();
@@ -882,10 +882,12 @@ function settingsHTML() {
   if (cloud.user) {
     h += `<div class="section-title">${L('Календарь', 'Calendar')}</div>`;
     const cals = cloud.cals || [];
-    if (cals.length) h += `<div class="list" style="margin-bottom:12px">${cals.map(c => `<div class="row"><span class="t"><b>${esc(c.label)}</b><span>${c.last_error ? L('Не загрузился: ', 'Failed: ') + esc(c.last_error) : c.checked_at ? L('Обновлён ', 'Updated ') + new Date(c.checked_at).toLocaleString(lang === 'ru' ? 'ru-RU' : 'en-GB', {day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'}) : ''}</span></span><button class="nav-btn" data-a="cal-remove" data-id="${esc(c.id)}">${L('Убрать', 'Remove')}</button></div>`).join('')}</div>`;
-    h += `<p class="hint" style="padding-bottom:10px">${L('Google Календарь (с компьютера): Настройки → нужный календарь → «Интеграция календаря» → «Секретный адрес в формате iCal». Скопируй и вставь. Ссылка хранится на сервере, приложение видит только занятость и названия событий. Можно добавить несколько (личный + рабочий).', 'Google Calendar (desktop): Settings → your calendar → Integrate calendar → Secret address in iCal format. Copy and paste it here. The link stays on the server; the app sees only busy times and event titles. Add several (personal + work).')}</p>
+    if (cals.length) h += `<div class="list" style="margin-bottom:12px">${cals.map(c => `<div class="row"><span class="t"><b>${esc(c.label)}</b><span>${c.last_error ? (c.last_error === 'google_revoked' ? L('Доступ отозван — подключи заново', 'Access revoked — connect again') : L('Не загрузился: ', 'Failed: ') + esc(c.last_error)) : c.checked_at ? L('Обновлён ', 'Updated ') + new Date(c.checked_at).toLocaleString(lang === 'ru' ? 'ru-RU' : 'en-GB', {day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'}) : ''}</span></span><button class="nav-btn" data-a="cal-remove" data-id="${esc(c.id)}">${L('Убрать', 'Remove')}</button></div>`).join('')}</div>`;
+    if (cloud.google) h += `<div class="stack" style="margin-bottom:12px"><button class="btn primary" data-a="google" ${cloud.calBusy ? 'disabled' : ''}>${L('Подключить Google Календарь', 'Connect Google Calendar')}</button></div>
+      <p class="hint" style="padding-bottom:16px">${L('Только чтение: время и названия событий. Google может показать «приложение не проверено» — это моё приложение, оно пока в бете: «Дополнительно» → «Перейти».', 'Read-only: event times and titles. Google may say the app isn’t verified yet — it’s in beta: Advanced → Go to app.')}</p>`;
+    h += `<p class="hint" style="padding-bottom:10px">${cloud.google ? L('Другой календарь (Apple, Outlook, рабочий) — ссылкой iCal. ', 'Another calendar (Apple, Outlook, work) — by iCal link. ') : ''}${L('В Google (с компьютера): Настройки → нужный календарь → «Интеграция календаря» → «Секретный адрес в формате iCal». Ссылка хранится на сервере, приложение видит только занятость и названия событий.', 'In Google (desktop): Settings → your calendar → Integrate calendar → Secret address in iCal format. The link stays on the server; the app sees only busy times and event titles.')}</p>
       <form id="calForm" class="stack" style="margin-bottom:10px"><label class="field">${L('Ссылка iCal (.ics)', 'iCal link (.ics)')}<input id="calUrl" type="url" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://calendar.google.com/calendar/ical/…/basic.ics" required></label>
-      <button class="btn primary" type="submit" ${cloud.calBusy ? 'disabled' : ''}>${cloud.calBusy ? L('Проверяю…', 'Checking…') : L('Подключить календарь', 'Connect calendar')}</button></form>
+      <button class="btn ${cloud.google ? 'quiet' : 'primary'}" type="submit" ${cloud.calBusy ? 'disabled' : ''}>${cloud.calBusy ? L('Проверяю…', 'Checking…') : L('Подключить по ссылке', 'Connect by link')}</button></form>
       <label class="btn quiet" style="margin-bottom:24px">${L('Или загрузить файл .ics на эту неделю', 'Or load an .ics file for this week')}<input type="file" id="icsFile" accept=".ics,text/calendar" hidden></label>`;
     const a = state.local.acts;
     h += `<div class="section-title">Garmin</div><p class="hint" style="padding-bottom:24px">${a?.linked ? L(`Подключён через «Зал» · за 5 недель ${a.list.length} активностей`, `Linked via the gym app · ${a.list.length} activities in 5 weeks`) + (a.error ? ' · ' + esc(a.error) : '') : a?.linked === false ? L('Не подключён. Вставь ключ Personal API в «Зале» → Настройки → Garmin — он общий для обоих приложений.', 'Not linked. Paste your Personal API key in the gym app → Settings → Garmin; it’s shared.') : L('Проверяю…', 'Checking…')}</p>`;
@@ -959,7 +961,7 @@ document.addEventListener('click', ev => {
   if (a === 'chip') { const inp = $('#cmdInput'); inp.value = el.dataset.t; inp.focus(); return; }
   if (a === 'wk') { view.wk = ymd(addDays(parseYmd(wk), +el.dataset.d)); lastChange = null; render(); if (cloud.user && cloud.cals?.length) loadBusy(view.wk); return; }
   if (a === 'wk-today') { view.wk = ymd(mondayOf(new Date())); render(); return; }
-  if (a === 'settings') { view.v = 'settings'; render(); scrollTo(0, 0); if (cloud.user) fn('cal-status').then(d => { if (!d.error) { cloud.cals = d.calendars; if (view.v === 'settings') render(); } }); return; }
+  if (a === 'settings') { view.v = 'settings'; render(); scrollTo(0, 0); if (cloud.user) fn('cal-status').then(d => { if (!d.error) { cloud.cals = d.calendars; cloud.google = d.google; if (view.v === 'settings') render(); } }); return; }
   if (a === 'back') { view.v = 'week'; render(); return; }
   if (a === 'undo') return undo(wk);
   if (a === 'dismiss') { lastChange = null; render(); return; }
@@ -1008,6 +1010,16 @@ document.addEventListener('click', ev => {
   }
   if (a === 'lang') { lang = el.dataset.l; try { localStorage.setItem('train.lang', lang); } catch {} render(); return; }
   if (a === 'sign-out') { cloud.client.auth.signOut(); cloud.user = null; cloud.cals = null; render(); return; }
+  if (a === 'google') {
+    cloud.calBusy = true; render();
+    fn('google-start', {return_to: location.origin + location.pathname}).then(d => {
+      cloud.calBusy = false;
+      if (d.url) { location.href = d.url; return; }
+      toast(d.error === 'google_not_configured' ? L('Google ещё не настроен на сервере', 'Google isn’t set up on the server yet') : L('Не получилось — проверь сеть', 'Didn’t work — check the connection'));
+      render();
+    });
+    return;
+  }
   if (a === 'cal-remove') { fn('cal-remove', {id: el.dataset.id}).then(d => { if (!d.error) { cloud.cals = d.calendars; for (const k of Object.keys(state.local.busy)) state.local.busy[k].at = 0; saveLocal(); render(); } }); return; }
   if (a === 'tpl-del') { state.template.splice(+el.dataset.i, 1); persist(); render(); return; }
   if (a === 'tpl-add') { state.template.push({id: 't-' + rid(), kind: 'run_easy', day: 4, tod: 'pm', min: 45, anchor: false, note: ''}); persist(); render(); return; }
@@ -1060,6 +1072,14 @@ document.addEventListener('keydown', ev => { if (ev.key === 'Escape' && !$('#she
 
 // Debug hook for local testing (busy/acts injection); harmless in production.
 window.trainDebug = {get state() { return state; }, view, run, parse, onBusy, matchActs, render, persist, place, setBusy(wk, events) { state.local.busy[wk] = {at: Date.now(), events}; saveLocal(); onBusy(wk); }, setActs(list) { state.local.acts = {at: Date.now(), list, linked: true}; saveLocal(); for (const wk of Object.keys(state.weeks)) { const week = state.weeks[wk], before = snapshot(week), lines = matchActs(wk, week); if (lines.length) commit(wk, week, before, 'Garmin', lines); } render(); }};
+
+// Back from Google's consent screen: #google=ok or #google=<reason>.
+const googleBack = (location.hash.match(/google=([\w-]+)/) || [])[1];
+if (googleBack) {
+  history.replaceState(null, '', location.pathname + location.search);
+  if (googleBack === 'ok') { state.local.busy = {}; saveLocal(); }
+  setTimeout(() => toast(googleBack === 'ok' ? L('Google Календарь подключён', 'Google Calendar connected') : googleBack === 'denied' ? L('Доступ не выдан — календарь не подключён', 'Access not granted — calendar not connected') : L('Google не подключился: ', 'Google didn’t connect: ') + googleBack), 400);
+}
 
 render();
 initCloud();
