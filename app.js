@@ -9,6 +9,10 @@ const rid = () => Math.random().toString(36).slice(2, 9);
 let lang = (() => { try { return localStorage.getItem('train.lang'); } catch { return null; } })() || ((navigator.language || '').startsWith('ru') ? 'ru' : 'en');
 const L = (ru, en) => lang === 'ru' ? ru : en;
 const DAYS = () => L(['пн', 'вт', 'ср', 'чт', 'пт', 'сб', 'вс'], ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']);
+const ICON = {
+  left: '<path d="m15 18-6-6 6-6"/>', right: '<path d="m9 18 6-6-6-6"/>', up: '<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>',
+};
+const icon = (n, size = 20) => `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[n]}</svg>`;
 const MONTHS_RU = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
 
 /* ---------- session kinds ---------- */
@@ -24,6 +28,10 @@ const KINDS = {
 };
 const kName = k => L(KINDS[k].ru, KINDS[k].en);
 const kDetail = k => L(KINDS[k].dRu, KINDS[k].dEn);
+// A why that only says "it's where you wanted it" is kept for the sheet, not shown in the list.
+const QUIET = '\u2063';
+const whyText = w => String(w || '').replace(QUIET, '');
+const whyLoud = w => !!w && !String(w).startsWith(QUIET);
 const PRIORITY = ['bike_long', 'bike_q', 'run_long', 'gym', 'climb', 'run_easy', 'bike_easy', 'mobility'];
 const SPORTS = {run: ['Бег', 'Running'], bike: ['Вел', 'Cycling'], gym: ['Зал', 'Gym'], climb: ['Скалодром', 'Climbing']};
 
@@ -222,7 +230,7 @@ function place(wk, week, opts = {}) {
         else if (c) s.why = L(`${prefWhy()} → ${D[d]} ${todWord(start)}. Заметь: ${reasonText(c, D[d])}`, `${prefWhy()} → ${D[d]} ${todWord(start)}. Heads-up: ${reasonText(c, D[d])}`);
         else if (d === p || d === s._from) s.why = offTod
           ? `${noWindowReason(wk, d, s)} → ${todWord(start)} ${hm(start)}`
-          : L(`${D[d]}: ${s.tod === 'pm' ? 'вечер свободен' : s.tod === 'am' ? 'утро свободно' : 'есть окно'}`, `${D[d]}: ${s.tod === 'pm' ? 'evening is free' : s.tod === 'am' ? 'morning is free' : 'there’s a window'}`);
+          : QUIET + L(`${D[d]}: ${s.tod === 'pm' ? 'вечер свободен' : s.tod === 'am' ? 'утро свободно' : 'есть окно'}`, `${D[d]}: ${s.tod === 'pm' ? 'evening is free' : s.tod === 'am' ? 'morning is free' : 'there’s a window'}`);
         else s.why = `${prefWhy()} → ${D[d]} ${todWord(start)}`;
         placed.push(s); done = true; break;
       }
@@ -332,15 +340,15 @@ const trainingSport = sp => sp === 'run' || sp === 'bike' || sp === 'gym' || sp 
 /* ---------- change log ---------- */
 function snapshot(week) { return JSON.stringify({sessions: week.sessions, away: week.away, sick: week.sick}); }
 function diffLines(wk, before, week) {
-  const D = DAYS(), prev = new Map(JSON.parse(before).sessions.map(s => [s.id, s])), out = [];
+  const D = DAYS(), why = s => whyText(s.why).replace(/ → [^.]*/, ''), prev = new Map(JSON.parse(before).sessions.map(s => [s.id, s])), out = [];
   for (const s of week.sessions) {
     const p = prev.get(s.id);
     if (!p || (s.status === 'done' && p.status !== 'done')) continue;
     if (p.day !== s.day || p.start !== s.start || p.min !== s.min) {
-      if (s.day == null) out.push(L(`${kName(s.kind)}: убрал из недели — ${s.why}`, `${kName(s.kind)}: off this week — ${s.why}`));
-      else if (p.day !== s.day) out.push(L(`${kName(s.kind)}: ${p.day != null ? D[p.day] : '—'} → ${D[s.day]} ${hm(s.start)} — ${s.why}`, `${kName(s.kind)}: ${p.day != null ? D[p.day] : '—'} → ${D[s.day]} ${hm(s.start)} — ${s.why}`));
+      if (s.day == null) out.push(L(`${kName(s.kind)}: убрал из недели — ${why(s)}`, `${kName(s.kind)}: off this week — ${why(s)}`));
+      else if (p.day !== s.day) out.push(L(`${kName(s.kind)}: ${p.day != null ? D[p.day] : '—'} → ${D[s.day]} ${hm(s.start)} — ${why(s)}`, `${kName(s.kind)}: ${p.day != null ? D[p.day] : '—'} → ${D[s.day]} ${hm(s.start)} — ${why(s)}`));
       else if (p.min !== s.min) out.push(L(`${kName(s.kind)}: ${fDur(p.min)} → ${fDur(s.min)}`, `${kName(s.kind)}: ${fDur(p.min)} → ${fDur(s.min)}`));
-      else out.push(L(`${kName(s.kind)}: ${D[s.day]} ${hm(p.start)} → ${hm(s.start)} — ${s.why}`, `${kName(s.kind)}: ${D[s.day]} ${hm(p.start)} → ${hm(s.start)} — ${s.why}`));
+      else out.push(L(`${kName(s.kind)}: ${D[s.day]} ${hm(p.start)} → ${hm(s.start)} — ${why(s)}`, `${kName(s.kind)}: ${D[s.day]} ${hm(p.start)} → ${hm(s.start)} — ${why(s)}`));
     }
   }
   return out;
@@ -711,11 +719,11 @@ function weekHTML() {
   const wk = view.wk, week = ensureWeek(wk), ti = todayIdx(wk), D = DAYS();
   const sub = weekTitle(wk) + (ti >= 0 && ti <= 6 ? L(' · эта неделя', ' · this week') : ti < 0 ? (ti >= -7 ? L(' · следующая', ' · next week') : '') : '');
   let h = `<main class="screen"><header class="nav"><div class="nav-row">
-    <span class="weeknav"><button class="nav-btn" data-a="wk" data-d="-7" aria-label="${L('Прошлая неделя', 'Previous week')}">‹</button><button class="nav-btn" data-a="wk" data-d="7" aria-label="${L('Следующая неделя', 'Next week')}">›</button>${ti < 0 || ti > 6 ? `<button class="nav-btn" data-a="wk-today" style="font-size:15px">${L('Сегодня', 'Today')}</button>` : ''}</span>
+    <span class="weeknav"><button class="nav-btn icon-btn" data-a="wk" data-d="-7" aria-label="${L('Прошлая неделя', 'Previous week')}">${icon('left')}</button><button class="nav-btn icon-btn" data-a="wk" data-d="7" aria-label="${L('Следующая неделя', 'Next week')}">${icon('right')}</button>${ti < 0 || ti > 6 ? `<button class="nav-btn link" data-a="wk-today">${L('Сегодня', 'Today')}</button>` : ''}</span>
     <button class="nav-btn" data-a="settings">${L('Настройки', 'Settings')}</button></div>
     <h1>${L('Неделя', 'Week')}<span class="sub">${esc(sub)}</span></h1></header>`;
   if (lastChange && lastChange.wk === wk) {
-    h += `<section class="card change"><div class="card-head"><h3>${lastChange.info ? L('Ответ', 'Reply') : L('Что поменялось', 'What changed')}</h3>${!lastChange.info ? `<button class="nav-btn" data-a="undo" style="font-size:15px;min-height:0;padding:0">${L('Отменить', 'Undo')}</button>` : `<button class="nav-btn" data-a="dismiss" style="font-size:15px;min-height:0;padding:0">${L('Ок', 'OK')}</button>`}</div>
+    h += `<section class="card change"><div class="card-head"><h3>${lastChange.info ? L('Ответ', 'Reply') : L('Что поменялось', 'What changed')}</h3>${!lastChange.info ? `<button class="nav-btn link" data-a="undo">${L('Отменить', 'Undo')}</button>` : `<button class="nav-btn link" data-a="dismiss">${L('Ок', 'OK')}</button>`}</div>
       ${lastChange.text ? `<p class="muted" style="font-size:13px">«${esc(lastChange.text)}»</p>` : ''}<ul>${lastChange.lines.map(l => `<li>${esc(l)}</li>`).join('')}</ul></section>`;
   }
   h += cardsHTML(wk, week);
@@ -729,7 +737,10 @@ function weekHTML() {
   const counted = effs.filter(s => s.status === 'planned' || s.status === 'done');
   const planMin = counted.filter(s => s.day != null).reduce((a, s) => a + s.min, 0);
   const doneMin = effs.filter(s => s.status === 'done').reduce((a, s) => a + (s.act?.min ?? s.min), 0) + extras(wk, week).filter(a => trainingSport(a.sport)).reduce((a, x) => a + x.min, 0);
-  h += `<div class="summary"><span><b>${counted.filter(s => s.day != null).length}</b>${L('тренировок', 'sessions')}</span><span><b>${fHours(planMin)}</b>${L('в плане', 'planned')}</span><span><b>${doneMin ? fHours(doneMin) : '—'}</b>${L('сделано', 'done')}</span>${loadBars(wk)}</div>`;
+  const nPlan = counted.filter(s => s.day != null).length;
+  h += `<div class="summary"><div><div class="big num">${doneMin ? fHours(doneMin) + `<small>${L(' из ', ' of ')}${fHours(planMin)}</small>` : fHours(planMin)}</div>
+    <div class="hint">${doneMin ? L(`сделано · ${nPlan} трен. в плане`, `done · ${nPlan} planned`) : L(`${nPlan} ${nPlan === 1 ? 'тренировка' : nPlan < 5 ? 'тренировки' : 'тренировок'} в плане`, `${nPlan} sessions planned`)}</div></div>${loadBars(wk)}</div>`;
+  h += painLine();
   // days
   for (let i = 0; i < 7; i++) h += dayHTML(wk, week, i, ti, effs);
   const un = unplacedAll(week);
@@ -738,6 +749,11 @@ function weekHTML() {
     h += `<div class="section-title">${L('История изменений', 'Change history')}</div><div class="list">` + week.log.slice(0, 8).map(e => `<div class="row" style="display:block"><span class="t"><b>«${esc(e.text)}»</b> <span class="muted" style="font-size:13px">${new Date(e.at).toLocaleString(lang === 'ru' ? 'ru-RU' : 'en-GB', {weekday: 'short', hour: '2-digit', minute: '2-digit'})}</span>${e.lines.map(l => `<span style="font-size:14px;color:var(--ink-2)">→ ${esc(l)}</span>`).join('')}</span></div>`).join('') + `</div>`;
   }
   return h + '</main>';
+}
+function painLine() {
+  const g = gate();
+  if (!g.known || g.doctor || g.stop || (g.max === 0 && !g.c.rest)) return '';
+  return `<p class="painline">${esc(L(`Боль: сидя ${g.c.sit}/10, ходьба ${g.c.walk}/10 — бег ждёт 48 ч на 0, вел — пока сидя не 0`, `Pain: sitting ${g.c.sit}/10, walking ${g.c.walk}/10 — running waits for 48 h at 0, riding until sitting is 0`))} <button class="nav-btn link" data-a="pain-redo">${L('Изменить', 'Edit')}</button></p>`;
 }
 function loadBars(wk) {
   const acts = state.local.acts?.list; if (!acts) return '';
@@ -761,12 +777,8 @@ function cardsHTML(wk, week) {
       <div class="acts"><button class="btn sm primary" data-a="pain-save" ${pending.sit == null || pending.walk == null ? 'disabled' : ''}>${L('Записать', 'Save')}</button></div></section>`;
   }
   const g = gate();
-  if (g.known && (g.max > 0 || g.c.rest)) {
-    const parts = [L(`Сидя ${g.c.sit}/10 · ходьба ${g.c.walk}/10`, `Sitting ${g.c.sit}/10 · walking ${g.c.walk}/10`)];
-    if (g.doctor) parts.push(L('Боль при ходьбе или в покое — по твоим правилам это повод сразу написать врачу.', 'Pain when walking or at rest — by your rules, message the doctor now.'));
-    else if (g.stop) parts.push(L('≥2/10 — стоп, напиши физио или травматологу.', '≥2/10 — stop and message your physio.'));
-    else parts.push(L('Бег ждёт 48 ч на 0/10; вел — пока сидя не 0.', 'Running waits for 48 h at 0/10; riding until sitting is 0.'));
-    h += `<section class="card ${g.doctor || g.stop ? 'alert' : ''}"><div class="card-head"><h3>${L('Боль учтена в плане', 'Pain is in the plan')}</h3><button class="nav-btn" data-a="pain-redo" style="font-size:15px;min-height:0;padding:0">${L('Изменить', 'Edit')}</button></div><p>${esc(parts.join(' '))}</p></section>`;
+  if (g.known && (g.doctor || g.stop)) {
+    h += `<section class="card alert"><div class="card-head"><h3>${g.doctor ? L('Напиши врачу', 'Message your doctor') : L('Стоп — напиши физио', 'Stop — message your physio')}</h3><button class="nav-btn link" data-a="pain-redo">${L('Изменить', 'Edit')}</button></div><p>${esc(g.doctor ? L(`Сидя ${g.c.sit}/10, ходьба ${g.c.walk}/10${g.c.rest ? ', в покое' : ''}: по твоим правилам это повод сразу написать. Бег, вел и стена на паузе.`, `Sitting ${g.c.sit}/10, walking ${g.c.walk}/10${g.c.rest ? ', at rest' : ''}: by your rules, message them now. Running, riding and climbing paused.`) : L(`${g.max}/10 — бег, вел и стена на паузе.`, `${g.max}/10 — running, riding and climbing paused.`))}</p></section>`;
   }
   // ask instead of carrying goals that haven't happened for weeks
   if (week && state.local.acts?.linked) {
@@ -813,12 +825,14 @@ function dayHTML(wk, week, i, ti, effs) {
   const bl = blocks(wk, i);
   const tags = [...(week.away || []).includes(i) ? [L('поездка', 'away')] : [], ...(week.sick || []).includes(i) ? [L('болезнь', 'ill')] : [], ...allDay.map(e => e.title)].slice(0, 2);
   const busyN = evs.filter(e => !e.free).length;
-  let h = `<section class="day${i < ti ? ' past' : ''}${i === ti ? ' today' : ''}"><button class="day-head" data-a="day" data-i="${i}"><b>${D[i]} ${date.getDate()}${tags.map(t => `<span class="tag">${esc(t)}</span>`).join('')}</b><span>${busyN ? L(`${busyN} в календаре`, `${busyN} in calendar`) : ''}</span></button>`;
-  h += `<div class="tl" aria-hidden="true">${bl.map(b => `<i class="b" style="left:${pct(b.s)}%;width:${pct(b.e) - pct(b.s)}%"></i>`).join('')}${sess.filter(s => s.start != null && s.status !== 'skipped' && s.status !== 'dropped').map(s => `<i class="s" style="left:${pct(s.start)}%;width:${Math.max(1, pct(s.start + (s.act?.min ?? s.min)) - pct(s.start))}%"></i>`).join('')}${ex.map(a => { const st = toMin(a.start.slice(11, 16)); return `<i class="x" style="left:${pct(st)}%;width:${Math.max(1, pct(st + a.min) - pct(st))}%"></i>`; }).join('')}${i === ti ? `<i class="now" style="left:${pct(nowMin())}%"></i>` : ''}</div>`;
+  const dayName = (lang === 'ru' ? ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье'] : ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'])[i];
+  let h = `<section class="day${i < ti ? ' past' : ''}${i === ti ? ' today' : ''}"><button class="day-head" data-a="day" data-i="${i}"><b>${dayName} <span class="num">${date.getDate()}</span>${i === ti ? `<span class="tag now-tag">${L('сегодня', 'today')}</span>` : ''}${tags.map(t => `<span class="tag">${esc(t)}</span>`).join('')}</b><span>${busyN && i >= ti ? L(`${busyN} в календаре`, `${busyN} in calendar`) : ''}</span></button>`;
+  if (i < ti && !sess.length && !ex.length) return h + '</section>';
+  if (i >= ti) h += `<div class="tl" aria-hidden="true">${bl.map(b => `<i class="${b.work ? 'w' : 'b'}" style="left:${pct(b.s)}%;width:${pct(b.e) - pct(b.s)}%"></i>`).join('')}${sess.filter(s => s.start != null && s.status !== 'skipped' && s.status !== 'dropped').map(s => `<i class="s" style="left:${pct(s.start)}%;width:${Math.max(1, pct(s.start + (s.act?.min ?? s.min)) - pct(s.start))}%"></i>`).join('')}${ex.map(a => { const st = toMin(a.start.slice(11, 16)); return `<i class="x" style="left:${pct(st)}%;width:${Math.max(1, pct(st + a.min) - pct(st))}%"></i>`; }).join('')}${i === ti ? `<i class="now" style="left:${pct(nowMin())}%"></i>` : ''}</div>`;
   for (const s of sess) {
     const time = s.start != null ? hm(s.start) : '';
     const meta = s.status === 'done' && s.act ? `${fDur(s.act.min)}${s.act.km ? ' · ' + String(s.act.km).replace('.', L(',', '.')) + L(' км', ' km') : ''} · ${s.act.start}` : `${fDur(s.min)}${time ? ' · ' + time : ''}`;
-    const why = s.status === 'skipped' ? L('Пропущено', 'Skipped') : s.status === 'dropped' ? s.why : s.why;
+    const why = s.status === 'skipped' ? L('Пропущено', 'Skipped') : s.was || whyLoud(s.why) ? whyText(s.why) : '';
     h += `<button class="sess ${s.status}" data-a="open" data-id="${s.id}"><span class="dot ${KINDS[s.kind].sport}"></span><span class="t"><b>${esc(kName(s.kind))}</b> <span class="meta">· ${esc(meta)}</span>
       ${s.was ? `<span class="why"><span class="was">${esc(kName(s.was))}</span> — ${esc(why)}</span>` : why ? `<span class="why">${esc(why)}</span>` : ''}${s.caution ? `<span class="why" style="color:var(--warn)">${esc(s.caution)}</span>` : ''}</span></button>`;
     if (s.status === 'planned' && i < ti) h += `<div class="pend"><button class="btn sm quiet" data-a="mark" data-id="${s.id}" data-st="done">${L('Сделал', 'Done')}</button><button class="btn sm quiet" data-a="mark" data-id="${s.id}" data-st="skipped">${L('Пропустил', 'Skipped')}</button></div>`;
@@ -841,7 +855,7 @@ function sessionSheet(id) {
   const s = effective(wk, raw), D = DAYS(), ti = todayIdx(wk);
   const when = s.day != null ? `${D[s.day]}${s.start != null ? ' · ' + hm(s.start) : ''} · ${fDur(s.min)}` : fDur(s.min);
   let h = `<div class="sheet-head"><h2>${esc(kName(s.kind))}</h2><button class="nav-btn" data-a="close-sheet">${L('Готово', 'Done')}</button></div><div class="sheet-scroll">
-    <p class="num" style="font-size:15px">${esc(when)}</p><p class="hint" style="margin:6px 0 4px">${esc(kDetail(s.kind))}</p>${s.why ? `<p class="hint">${esc(s.why)}</p>` : ''}`;
+    <p class="num" style="font-size:15px">${esc(when)}</p><p class="hint" style="margin:6px 0 4px">${esc(kDetail(s.kind))}</p>${s.why ? `<p class="hint">${esc(whyText(s.why))}</p>` : ''}`;
   if (s.status === 'planned' || s.status === 'skipped' || s.status === 'done') {
     h += `<div class="section-title">${L('Перенести на', 'Move to')}</div><div class="chips-row" style="flex-wrap:wrap">${D.map((d, i) => `<button class="chip" data-a="sheet-move" data-id="${id}" data-d="${i}" ${i < ti ? 'disabled style="opacity:.35"' : ''} aria-pressed="${s.day === i}">${d}</button>`).join('')}</div>
       <div class="section-title">${L('Есть только', 'Only have')}</div><div class="chips-row">${[30, 45, 60, 90].map(m => `<button class="chip" data-a="sheet-min" data-id="${id}" data-m="${m}">${fDur(m)}</button>`).join('')}</div>
@@ -862,7 +876,7 @@ function daySheet(i) {
 /* ---------- settings ---------- */
 let authMode = 'in';
 function settingsHTML() {
-  let h = `<main class="screen"><header class="nav"><div class="nav-row"><button class="nav-btn" data-a="back">‹ ${L('Неделя', 'Week')}</button><span></span></div><h1>${L('Настройки', 'Settings')}</h1></header>`;
+  let h = `<main class="screen"><header class="nav"><div class="nav-row"><button class="nav-btn" data-a="back">${icon('left')}${L('Неделя', 'Week')}</button><span></span></div><h1>${L('Настройки', 'Settings')}</h1></header>`;
   h += `<div class="seg" role="group" style="margin-bottom:16px"><button data-a="lang" data-l="ru" aria-pressed="${lang === 'ru'}">Русский</button><button data-a="lang" data-l="en" aria-pressed="${lang === 'en'}">English</button></div>`;
   h += acctHTML();
   if (cloud.user) {
