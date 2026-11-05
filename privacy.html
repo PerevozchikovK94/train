@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Неделя — конфиденциальность</title>
+<meta name="description" content="Какие данные использует приложение «Неделя» и как.">
+<style>
+:root{--bg:#FAFAF8;--ink:#1C1C1A;--ink-2:#4A4A46;--muted:#8C8C86;--line:#E7E7E2;--accent:#3E6B5A;color-scheme:light}
+@media (prefers-color-scheme:dark){:root{--bg:#121211;--ink:#EDEDE8;--ink-2:#C4C4BE;--muted:#8E8E88;--line:#2A2A27;--accent:#8FB8A6;color-scheme:dark}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 -apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",Arial,sans-serif}
+main{max-width:680px;margin:0 auto;padding:40px 16px 64px}
+h1{font-size:32px;line-height:1.15;letter-spacing:-.02em;margin:0 0 6px}
+h2{font-size:19px;margin:32px 0 8px}
+p,li{color:var(--ink-2)}
+ul{padding-left:20px}
+li{margin:4px 0}
+.muted{color:var(--muted);font-size:14px}
+a{color:var(--accent)}
+hr{border:0;border-top:1px solid var(--line);margin:40px 0}
+</style>
+</head>
+<body>
+<main>
+<h1>Конфиденциальность</h1>
+<p class="muted">Приложение «Неделя» · обновлено 5 ноября 2026</p>
+
+<p>«Неделя» планирует тренировки на неделю вокруг твоего календаря. Здесь описано, какие данные приложение использует, где они хранятся и как их удалить.</p>
+
+<h2>Какие данные и зачем</h2>
+<ul>
+  <li><b>Аккаунт:</b> почта для входа. Нужна только для того, чтобы твой план был виден тебе на разных устройствах.</li>
+  <li><b>Календарь (Google Календарь или ссылка iCal):</b> время и названия событий на неделю, которую ты смотришь. Только чтение. Используются, чтобы найти свободные окна и объяснить, почему тренировка переехала. Приложение ничего не создаёт, не меняет и не удаляет в календаре.</li>
+  <li><b>Тренировки из Garmin</b> (если ты подключил ключ Garmin): тип, дата, длительность и дистанция. Нужны, чтобы отмечать сделанное.</li>
+  <li><b>То, что ты вводишь сам:</b> шаблон недели, изменения плана, отметки самочувствия и боли.</li>
+</ul>
+
+<h2>Где хранится</h2>
+<ul>
+  <li>План, шаблон и отметки хранятся в базе Supabase (ЕС, Франкфурт). Каждая запись доступна только твоему аккаунту.</li>
+  <li>События календаря не сохраняются на сервере. Сервер получает их по запросу и сразу передаёт в приложение. Копия недели хранится только в твоём браузере.</li>
+  <li>Доступ к Google Календарю (refresh token) и ссылки iCal хранятся на сервере в таблице, которую не может прочитать ни одно приложение, кроме сервера «Недели». Само приложение их не видит.</li>
+</ul>
+
+<h2>Чего приложение не делает</h2>
+<ul>
+  <li>Не продаёт и не передаёт данные третьим лицам.</li>
+  <li>Не показывает рекламу и не использует данные для рекламы.</li>
+  <li>Не использует данные календаря для обучения моделей ИИ.</li>
+</ul>
+
+<h2>Данные Google</h2>
+<p>Использование и передача информации, полученной через API Google, соответствуют <a href="https://developers.google.com/terms/api-services-user-data-policy" rel="noopener">Google API Services User Data Policy</a>, включая требования Limited Use. Данные Google Календаря используются только для того, чтобы показать тебе твою неделю и спланировать тренировки.</p>
+
+<h2>Как удалить</h2>
+<ul>
+  <li><b>Календарь:</b> «Настройки» → «Календарь» → «Убрать». Доступ к Google также можно отозвать на <a href="https://myaccount.google.com/permissions" rel="noopener">myaccount.google.com/permissions</a>.</li>
+  <li><b>Всё остальное:</b> напиши в <a href="https://github.com/PerevozchikovK94/train/issues" rel="noopener">issues проекта</a>, и аккаунт удалится вместе со всеми данными.</li>
+</ul>
+
+<hr>
+
+<h1 lang="en">Privacy</h1>
+<div lang="en">
+<p>«Неделя» (Week) plans your training week around your calendar.</p>
+<ul>
+  <li><b>What it reads:</b> your sign-in email; event times and titles from Google Calendar or an iCal link (read-only, never modified); Garmin activities if you link them; the plan, notes and pain checks you enter.</li>
+  <li><b>Where it lives:</b> your plan is stored in Supabase (EU, Frankfurt), readable only by your account. Calendar events are not stored on the server: they are fetched on request and passed to the app; a copy of the week stays in your browser. Google refresh tokens and iCal links are kept server-side and never exposed to the app.</li>
+  <li><b>What it never does:</b> sell or share data, show ads, or use calendar data to train AI models.</li>
+  <li><b>Google user data:</b> use and transfer of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy" rel="noopener">Google API Services User Data Policy</a>, including the Limited Use requirements.</li>
+  <li><b>Deletion:</b> remove the calendar in Settings, revoke Google access at <a href="https://myaccount.google.com/permissions" rel="noopener">myaccount.google.com/permissions</a>, or open an <a href="https://github.com/PerevozchikovK94/train/issues" rel="noopener">issue</a> to delete your account and all data.</li>
+</ul>
+</div>
+<p class="muted"><a href="./">← Неделя</a></p>
+</main>
+</body>
+</html>

@@ -912,6 +912,7 @@ function settingsHTML() {
     <label class="field" style="font-size:12px">${L('Вечер начинается', 'Evening starts')}${tin('evening', p.evening)}</label><label class="field" style="font-size:12px">${L('Дорога вокруг встреч, мин', 'Travel around events, min')}<input data-pref="buffer" type="number" min="0" max="90" step="5" value="${p.buffer}"></label>
     <label class="check full" style="justify-content:flex-start"><input type="checkbox" data-pref="work" ${p.work ? 'checked' : ''}> ${L('Рабочие часы по будням считать занятыми', 'Treat weekday work hours as busy')}</label>
     <label class="field" style="font-size:12px">${L('Работа с', 'Work from')}${tin('workStart', p.workStart)}</label><label class="field" style="font-size:12px">${L('до', 'to')}${tin('workEnd', p.workEnd)}</label></div>`;
+  h += `<p class="hint" style="padding:24px 0 8px"><a href="privacy.html" style="color:var(--accent)">${L('Конфиденциальность', 'Privacy')}</a></p>`;
   return h + '</main>';
 }
 function acctHTML() {
