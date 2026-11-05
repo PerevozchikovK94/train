@@ -1063,6 +1063,12 @@ window.trainDebug = {get state() { return state; }, view, run, parse, onBusy, ma
 
 render();
 initCloud();
-if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+if ('serviceWorker' in navigator && location.protocol === 'https:') {
+  // A new deploy installs a new worker; when it takes over, reload once so the page runs the new code.
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController && !reloaded) { reloaded = true; location.reload(); } });
+  navigator.serviceWorker.register('sw.js', {updateViaCache: 'none'}).then(r => r.update()).catch(() => {});
+}
 try { navigator.storage?.persist?.(); } catch {}
 })();
