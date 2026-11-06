@@ -875,7 +875,7 @@ function dayHTML(wk, week, i, ti, effs) {
       ${s.was ? `<span class="why"><span class="was">${esc(kName(s.was))}</span> — ${esc(why)}</span>` : why ? `<span class="why">${esc(why)}</span>` : ''}${s.caution ? `<span class="why" style="color:var(--warn)">${esc(s.caution)}</span>` : ''}</span></button>`;
     if (s.status === 'planned' && i < ti) h += `<div class="pend"><button class="btn sm quiet" data-a="mark" data-id="${s.id}" data-st="done">${L('Сделал', 'Done')}</button><button class="btn sm quiet" data-a="mark" data-id="${s.id}" data-st="skipped">${L('Пропустил', 'Skipped')}</button></div>`;
   }
-  for (const a of ex) h += `<div class="sess${week.history ? '' : ' extra'}"><span class="dot${week.history ? ' ' + a.sport : ''}"></span><span class="t"><b>${esc(a.name || a.type)}</b> <span class="meta">· ${fDur(a.min)}${a.km ? ' · ' + String(a.km).replace('.', L(',', '.')) + L(' км', ' km') : ''} · ${a.start.slice(11, 16)}</span>${week.sessions.length ? `<span class="why">${L('Сверх плана — засчитано в неделю', 'Not in the plan — counts for the week')}</span>` : ''}</span></div>`;
+  for (const a of ex) h += `<button class="sess${week.history ? '' : ' extra'}" data-a="act" data-id="${a.id}"><span class="dot${week.history ? ' ' + a.sport : ''}"></span><span class="t"><b>${esc(a.name || a.type)}</b> <span class="meta">· ${fDur(a.min)}${a.km ? ' · ' + String(a.km).replace('.', L(',', '.')) + L(' км', ' km') : ''} · ${a.start.slice(11, 16)}</span>${week.sessions.length ? `<span class="why">${L('Сверх плана — засчитано в неделю', 'Not in the plan — counts for the week')}</span>` : ''}</span></button>`;
   if (!sess.length && !ex.length && i >= ti) {
     const w = windows(wk, i, week);
     const big = w.reduce((m, [a, z]) => Math.max(m, z - a), 0);
@@ -888,9 +888,165 @@ function dayHTML(wk, week, i, ti, effs) {
 let sheetCtx = null;
 function openSheet(html, ctx) { sheetCtx = ctx || null; $('#sheetPanel').innerHTML = html; $('#sheet').hidden = false; }
 function closeSheet() { $('#sheet').hidden = true; sheetCtx = null; }
+/* ---------- one workout: summary, zones, charts ---------- */
+const actMem = new Map();
+function actCached(id) {
+  if (actMem.has(id)) return actMem.get(id);
+  try { const d = JSON.parse(localStorage.getItem('train.act.' + id)); if (d?.summary) { actMem.set(id, d); return d; } } catch {}
+  return null;
+}
+function actStore(id, d) {
+  actMem.set(id, d);
+  try {
+    const keys = JSON.parse(localStorage.getItem('train.act.keys') || '[]').filter(k => k !== id);
+    keys.push(id);
+    while (keys.length > 15) localStorage.removeItem('train.act.' + keys.shift());
+    localStorage.setItem('train.act.' + id, JSON.stringify(d));
+    localStorage.setItem('train.act.keys', JSON.stringify(keys));
+  } catch {}
+}
+async function openActivity(id, plan, sid) {
+  id = Number(id);
+  const base = (state.local.acts?.list || []).find(a => a.id === id) || null;
+  let d = actCached(id);
+  openSheet(activityHTML(base, d, plan, sid, !d), {act: id});
+  if (d) return wireCharts(d);
+  d = await fn('activity', {id});
+  if (sheetCtx?.act !== id) return;
+  if (d.error || !d.summary) { $('#sheetPanel').innerHTML = activityHTML(base, null, plan, sid, false, d.error || 'unavailable'); return; }
+  actStore(id, d);
+  $('#sheetPanel').innerHTML = activityHTML(base, d, plan, sid, false);
+  wireCharts(d);
+}
+const hms = sec => { sec = Math.round(sec || 0); const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s2 = sec % 60; return h ? `${h}:${pad(m)}:${pad(s2)}` : `${m}:${pad(s2)}`; };
+const fNum = (v, dp = 0) => v == null ? '—' : Number(v).toLocaleString(lang === 'ru' ? 'ru-RU' : 'en-GB', {minimumFractionDigits: dp, maximumFractionDigits: dp});
+const paceOf = spd => spd && spd > 0.8 ? 1000 / spd : null; // seconds per km
+const fPace = sec => sec == null ? '—' : `${Math.floor(sec / 60)}:${pad(Math.round(sec % 60) % 60)}`;
+function smooth(arr, w) {
+  if (!arr) return arr;
+  return arr.map((_, i) => { let s2 = 0, n = 0; for (let j = Math.max(0, i - w); j <= Math.min(arr.length - 1, i + w); j++) if (arr[j] != null) { s2 += arr[j]; n++; } return arr[i] == null ? null : n ? s2 / n : null; });
+}
+// The series each sport is read by; one chart per measure, one shared time axis.
+function chartDefs(d) {
+  const S = d.series, sp = d.summary.sport, out = [];
+  if (!S) return out;
+  const has = a => a && a.some(v => v != null && v > 0);
+  const sum = d.summary;
+  if (has(S.hr)) out.push({key: 'hr', label: L('Пульс', 'Heart rate'), unit: L('уд/мин', 'bpm'), data: S.hr, fmt: v => fNum(v), avg: sum.hr});
+  if (sp === 'bike' && has(S.pw)) out.push({key: 'pw', label: L('Мощность', 'Power'), unit: L('Вт', 'W'), data: smooth(S.pw, 2), fmt: v => fNum(v), avg: sum.pw});
+  if (sp === 'run' && has(S.spd)) out.push({key: 'pace', label: L('Темп', 'Pace'), unit: L('/км', '/km'), data: smooth(S.spd.map(paceOf), 2).map(v => v == null ? null : Math.min(720, Math.max(150, v))), fmt: fPace, invert: true, avg: paceOf(sum.spd)});
+  if (sp !== 'run' && sp !== 'bike' && has(S.spd)) out.push({key: 'spd', label: L('Скорость', 'Speed'), unit: L('км/ч', 'km/h'), data: S.spd.map(v => v == null ? null : v * 3.6), fmt: v => fNum(v, 1)});
+  if (has(S.el)) out.push({key: 'el', label: L('Высота', 'Elevation'), unit: L('м', 'm'), data: S.el, fmt: v => fNum(v), area: true});
+  return out;
+}
+function runSplits(S) {
+  if (!S?.dist || !S?.t) return [];
+  const out = []; let k = 1, prevT = 0, prevI = 0;
+  for (let i = 1; i < S.dist.length; i++) {
+    const d0 = S.dist[i - 1], d1 = S.dist[i];
+    if (d0 == null || d1 == null) continue;
+    while (d1 >= k * 1000) {
+      const f = (k * 1000 - d0) / ((d1 - d0) || 1), tk = S.t[i - 1] + f * (S.t[i] - S.t[i - 1]);
+      const hrs = (S.hr || []).slice(prevI, i + 1).filter(v => v != null);
+      out.push({km: k, sec: tk - prevT, hr: hrs.length ? Math.round(hrs.reduce((a, b) => a + b, 0) / hrs.length) : null});
+      prevT = tk; prevI = i; k++;
+    }
+  }
+  return out;
+}
+function activityHTML(base, d, plan, sid, loading, error) {
+  const S = d?.summary || {}, sp = S.sport || base?.sport || 'other';
+  const name = S.name || base?.name || L('Тренировка', 'Workout');
+  const start = S.start || base?.start || '';
+  const when = start ? new Date(start.replace(' ', 'T')).toLocaleString(lang === 'ru' ? 'ru-RU' : 'en-GB', {weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'}) : '';
+  let h = `<div class="sheet-head"><h2>${esc(name)}</h2><button class="nav-btn" data-a="close-sheet">${L('Готово', 'Done')}</button></div><div class="sheet-scroll act">`;
+  h += `<p class="hint">${esc(when)}${plan ? ' · ' + esc(plan) : ''}</p>`;
+  const dur = S.dur ?? (base ? base.min * 60 : null), dist = S.dist ?? (base?.km ? base.km * 1000 : null);
+  h += `<div class="act-big"><span class="big num">${hms(dur)}</span><span class="hint">${[dist ? fNum(dist / 1000, 1) + L(' км', ' km') : '', (S.up ?? base?.elev) ? '↑ ' + fNum(S.up ?? base.elev) + L(' м', ' m') : '', S.moving && S.dur && S.dur - S.moving > 120 ? L('в движении ', 'moving ') + hms(S.moving) : ''].filter(Boolean).join(' · ')}</span></div>`;
+  if (loading) return h + `<p class="hint" style="padding:24px 0">${L('Загружаю из Garmin…', 'Loading from Garmin…')}</p></div>`;
+  if (error) return h + `<p class="hint" style="padding:24px 0">${error === 'signed_out' ? L('Войди, чтобы видеть детали из Garmin', 'Sign in to see Garmin details') : L('Garmin не отдал детали — попробуй позже', 'Garmin didn’t return details — try later')}</p></div>`;
+  // stats, by sport; empty ones are left out
+  const st = [];
+  const add = (label, value) => { if (value && !/^—/.test(value)) st.push([label, value]); };
+  if (sp === 'bike') { add(L('Мощность NP / ср.', 'Power NP / avg'), S.np ? `${fNum(S.np)} / ${fNum(S.pw)} ${L('Вт', 'W')}` : null); add(L('Скорость ср.', 'Avg speed'), S.spd ? fNum(S.spd * 3.6, 1) + L(' км/ч', ' km/h') : null); add('TSS · IF', S.tss ? `${fNum(S.tss)} · ${fNum(S.if, 2)}` : null); add(L('Лучшие 20 мин', 'Best 20 min'), S.pw20 ? fNum(S.pw20) + L(' Вт', ' W') : null); }
+  if (sp === 'run') add(L('Темп ср.', 'Avg pace'), S.spd ? fPace(paceOf(S.spd)) + L(' /км', ' /km') : null);
+  add(L('Пульс ср. / макс.', 'HR avg / max'), S.hr ? `${fNum(S.hr)} / ${fNum(S.hrMax)}` : null);
+  add(L('Каденс', 'Cadence'), S.cad ? fNum(S.cad) + (sp === 'run' ? L(' шаг/мин', ' spm') : L(' об/мин', ' rpm')) : null);
+  add('Training Effect', S.te ? `${fNum(S.te, 1)} ${L('аэроб.', 'aer.')} · ${fNum(S.teAn, 1)} ${L('анаэроб.', 'anaer.')}` : null);
+  add(L('Калории', 'Calories'), S.kcal ? fNum(S.kcal) + L(' ккал', ' kcal') : null);
+  add(L('Температура', 'Temperature'), S.temp != null ? fNum(S.temp) + '°' : null);
+  if (st.length) h += `<dl class="act-stats">${st.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd class="num">${esc(v)}</dd></div>`).join('')}</dl>`;
+  // heart-rate zones: one hue, light to dark
+  const z = base?.hrz, zt = z ? z.reduce((a, b) => a + b, 0) : 0;
+  if (zt > 60) {
+    h += `<div class="section-title">${L('Пульсовые зоны', 'Heart-rate zones')}</div><div class="zones" role="img" aria-label="${esc(z.map((v, i) => `Z${i + 1} ${Math.round(v / 60)} ${L('мин', 'min')}`).join(', '))}">${z.map((v, i) => v > 0 ? `<i class="z${i + 1}" style="flex:${v}"></i>` : '').join('')}</div>
+      <div class="zones-key">${z.map((v, i) => `<span><i class="z${i + 1}"></i>Z${i + 1} <b class="num">${Math.round(v / 60)}</b> ${L('мин', 'min')}</span>`).join('')}</div>`;
+  }
+  // charts
+  const defs = d ? chartDefs(d) : [];
+  if (defs.length) {
+    const T = d.series.t, end = T[T.length - 1] || 1;
+    h += `<div class="section-title">${L('По ходу тренировки', 'Through the workout')}</div><div class="charts" data-end="${end}">
+      <div class="readout num" aria-live="polite">${L('Проведи пальцем по графику', 'Drag across a chart')}</div>`;
+    for (const c of defs) {
+      const vals = c.data.filter(v => v != null);
+      let lo = Math.min(...vals), hi = Math.max(...vals);
+      if (c.key === 'hr') { lo = Math.max(60, lo - 5); hi += 5; } else if (c.key === 'el') { const pad2 = Math.max(10, (hi - lo) * .1); lo -= pad2; hi += pad2; } else { lo = Math.max(0, lo); }
+      if (hi - lo < 1) hi = lo + 1;
+      const y = v => c.invert ? (v - lo) / (hi - lo) * 100 : 100 - (v - lo) / (hi - lo) * 100;
+      let path = '', pen = false;
+      c.data.forEach((v, i) => { if (v == null) { pen = false; return; } const x = T[i] / end * 1000; path += `${pen ? 'L' : 'M'}${x.toFixed(1)} ${y(v).toFixed(1)}`; pen = true; });
+      const area = c.area ? `${path}L1000 100L0 100Z` : '';
+      // The average shown is Garmin's own (whole recording), so it matches the summary above.
+      const mean = c.avg ?? vals.reduce((a, b) => a + b, 0) / vals.length;
+      c.y = y; c.lo = lo; c.hi = hi;
+      h += `<figure class="chart" data-key="${c.key}"><figcaption><span>${esc(c.label)}</span><span class="muted">${esc(c.unit)}</span></figcaption>
+        <div class="plot"><svg viewBox="0 0 1000 100" preserveAspectRatio="none" aria-label="${esc(`${c.label}: ${c.fmt(lo)}–${c.fmt(hi)} ${c.unit}, ${L('среднее', 'average')} ${c.fmt(mean)}`)}" role="img">
+          <line x1="0" x2="1000" y1="${y(c.invert ? lo : hi).toFixed(1)}" y2="${y(c.invert ? lo : hi).toFixed(1)}" class="grid"/><line x1="0" x2="1000" y1="${y(mean).toFixed(1)}" y2="${y(mean).toFixed(1)}" class="grid mean"/>
+          ${area ? `<path d="${area}" class="area"/>` : ''}<path d="${path}" class="line"/></svg>
+          <span class="ylab top num">${esc(c.fmt(c.invert ? lo : hi))}</span><span class="ylab mid num">${L('ср.', 'avg')} ${esc(c.fmt(mean))}</span>
+          <i class="dot-h"></i></div></figure>`;
+    }
+    h += `<div class="xaxis num"><span>0:00</span><span>${hms(end / 2)}</span><span>${hms(end)}</span></div><i class="cross"></i></div>`;
+    sheetDefs = defs;
+  }
+  if (sp === 'run' && d?.series) {
+    const sp2 = runSplits(d.series);
+    if (sp2.length) h += `<div class="section-title">${L('Километры', 'Splits')}</div><table class="splits num"><thead><tr><th>${L('км', 'km')}</th><th>${L('Темп', 'Pace')}</th><th>${L('Пульс', 'HR')}</th></tr></thead><tbody>${sp2.map(r => `<tr><td>${r.km}</td><td>${fPace(r.sec)}</td><td>${r.hr ?? '—'}</td></tr>`).join('')}</tbody></table>`;
+  }
+  if (sid) h += `<div class="stack" style="padding-top:20px"><button class="btn quiet" data-a="mark" data-id="${sid}" data-st="planned">${L('Не засчитывать — вернуть в план', 'Don’t count it — back to plan')}</button></div>`;
+  return h + '</div>';
+}
+let sheetDefs = [];
+// One crosshair across all charts; the readout names the moment and every value at it.
+function wireCharts(d) {
+  const box = document.querySelector('#sheetPanel .charts'); if (!box) return;
+  const T = d.series.t, end = +box.dataset.end, cross = box.querySelector('.cross'), out = box.querySelector('.readout');
+  const move = ev => {
+    const plot = box.querySelector('.plot').getBoundingClientRect();
+    const f = Math.min(1, Math.max(0, (ev.clientX - plot.left) / plot.width)), at = f * end;
+    let i = 0; for (let k = 1; k < T.length; k++) if (Math.abs(T[k] - at) < Math.abs(T[i] - at)) i = k;
+    const x = T[i] / end;
+    cross.hidden = false; cross.style.left = `calc(${(plot.left - box.getBoundingClientRect().left).toFixed(1)}px + ${(x * plot.width).toFixed(1)}px)`;
+    const parts = [hms(T[i])];
+    box.querySelectorAll('.chart').forEach((fig, n) => {
+      const c = sheetDefs[n], v = c.data[i], dot = fig.querySelector('.dot-h');
+      if (v == null) { dot.hidden = true; return; }
+      dot.hidden = false; dot.style.left = `${x * 100}%`; dot.style.top = `${c.y(v)}%`;
+      parts.push(`${c.label} ${c.fmt(v)} ${c.unit}`);
+    });
+    out.textContent = parts.join(' · ');
+  };
+  box.addEventListener('pointermove', move);
+  box.addEventListener('pointerdown', move);
+  box.addEventListener('pointerleave', () => { cross.hidden = true; box.querySelectorAll('.dot-h').forEach(x => { x.hidden = true; }); });
+  cross.hidden = true; box.querySelectorAll('.dot-h').forEach(x => { x.hidden = true; });
+}
+
 function sessionSheet(id) {
   const wk = view.wk, week = state.weeks[wk], raw = week?.sessions.find(s => s.id === id); if (!raw) return;
   const s = effective(wk, raw), D = DAYS(), ti = todayIdx(wk);
+  if (raw.status === 'done' && raw.act?.id) return openActivity(raw.act.id, L(`По плану: ${kName(raw.kind)} · ${fDur(raw.short || raw.min)}`, `Planned: ${kName(raw.kind)} · ${fDur(raw.short || raw.min)}`), id);
   const when = s.day != null ? `${D[s.day]}${s.start != null ? ' · ' + hm(s.start) : ''} · ${fDur(s.min)}` : fDur(s.min);
   let h = `<div class="sheet-head"><h2>${esc(kName(s.kind))}</h2><button class="nav-btn" data-a="close-sheet">${L('Готово', 'Done')}</button></div><div class="sheet-scroll">
     <p class="num" style="font-size:15px">${esc(when)}</p><p class="hint" style="margin:6px 0 4px">${esc(kDetail(s.kind))}</p>${s.why ? `<p class="hint">${esc(whyText(s.why))}</p>` : ''}`;
@@ -1007,6 +1163,7 @@ document.addEventListener('click', ev => {
   if (a === 'undo') return undo(wk);
   if (a === 'dismiss') { lastChange = null; render(); return; }
   if (a === 'open') return sessionSheet(el.dataset.id);
+  if (a === 'act') return openActivity(el.dataset.id);
   if (a === 'day') return daySheet(+el.dataset.i);
   if (a === 'sheet-move') { const s = state.weeks[wk].sessions.find(x => x.id === el.dataset.id); closeSheet(); return runOn(s, `перенеси на ${DAYS_RU[+el.dataset.d]}`, `move to ${DAYS_EN[+el.dataset.d]}`); }
   if (a === 'sheet-min') { const s = state.weeks[wk].sessions.find(x => x.id === el.dataset.id); closeSheet(); return runOn(s, `${DAYS_RU[s.day]} ${el.dataset.m} минут`, `${el.dataset.m} min ${DAYS_EN[s.day]}`); }
