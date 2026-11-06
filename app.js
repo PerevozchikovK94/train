@@ -746,7 +746,7 @@ function weekHTML() {
   const un = unplacedAll(week);
   if (un.length) h += `<div class="section-title">${L('Не влезло', 'Didn’t fit')}</div><div class="list">` + un.map(s => `<button class="sess" data-a="open" data-id="${s.id}"><span class="dot ${KINDS[s.kind].sport}"></span><span class="t"><b>${esc(kName(s.kind))}</b> <span class="meta">· ${fDur(s.min)}</span><span class="why">${esc(s.why)}</span></span></button>`).join('') + `</div>`;
   if (week.log.length) {
-    h += `<div class="section-title">${L('История изменений', 'Change history')}</div><div class="list">` + week.log.slice(0, 8).map(e => `<div class="row" style="display:block"><span class="t"><b>«${esc(e.text)}»</b> <span class="muted" style="font-size:13px">${new Date(e.at).toLocaleString(lang === 'ru' ? 'ru-RU' : 'en-GB', {weekday: 'short', hour: '2-digit', minute: '2-digit'})}</span>${e.lines.map(l => `<span style="font-size:14px;color:var(--ink-2)">→ ${esc(l)}</span>`).join('')}</span></div>`).join('') + `</div>`;
+    h += `<details class="log" ${logOpen ? 'open' : ''}><summary><span>${L('История изменений', 'Change history')}</span><span class="log-n num">${week.log.length}</span><svg class="log-chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary><div class="list">` + week.log.slice(0, 8).map(e => `<div class="row" style="display:block"><span class="t"><b>«${esc(e.text)}»</b> <span class="muted" style="font-size:13px">${new Date(e.at).toLocaleString(lang === 'ru' ? 'ru-RU' : 'en-GB', {weekday: 'short', hour: '2-digit', minute: '2-digit'})}</span>${e.lines.map(l => `<span style="font-size:14px;color:var(--ink-2)">→ ${esc(l)}</span>`).join('')}</span></div>`).join('') + `</div></details>`;
   }
   return h + '</main>';
 }
@@ -814,6 +814,8 @@ function cardsHTML(wk, week) {
   return h;
 }
 const pending = {sit: null, walk: null, rest: false};
+let logOpen = false;
+document.addEventListener('toggle', ev => { if (ev.target.classList?.contains('log')) logOpen = ev.target.open; }, true);
 
 const TL_FROM = 6 * 60, TL_TO = 23 * 60;
 const pct = m => Math.max(0, Math.min(100, (m - TL_FROM) / (TL_TO - TL_FROM) * 100));
