@@ -88,7 +88,7 @@ a.btn{text-decoration:none}
 
 /* ---------- training week ---------- */
 /* Sport colours: one categorical set, checked with the dataviz validator for every pair (sports sit side by side), light and dark. */
-:root{--bike:#2a78d6;--run:#eb6834;--climb:#1baf7a;--gym:#851980;--walk:#8C8C86;--busy:#DADAD3;--cmd:132px}
+:root{--bike:#2a78d6;--run:#eb6834;--climb:#1baf7a;--gym:#851980;--walk:#8C8C86;--busy:#DADAD3;--cmd:76px}
 @media (prefers-color-scheme:dark){:root{--bike:#3987e5;--run:#d95926;--climb:#199e70;--gym:#a5559f;--walk:#8E8E88;--busy:#3D3D39}}
 .screen{padding-bottom:calc(var(--cmd) + 32px + env(safe-area-inset-bottom,0px))}
 .weeknav{display:flex;align-items:center;gap:2px;margin-left:-6px}
@@ -218,3 +218,63 @@ a.btn{text-decoration:none}
 .splits th{font-size:13px;font-weight:500;color:var(--muted);text-align:left;padding:6px 0;border-bottom:1px solid var(--line)}
 .splits td{padding:10px 0;border-bottom:1px solid var(--line)}
 .splits th:not(:first-child),.splits td:not(:first-child){text-align:right}
+
+/* ---------- week, v2: one hero, one progress line, one row per day ---------- */
+.bike{--sc:var(--bike)}.run{--sc:var(--run)}.gym{--sc:var(--gym)}.climb{--sc:var(--climb)}.walk{--sc:var(--walk)}
+.hero{position:relative;background:color-mix(in srgb,var(--sc) 9%,var(--bg));border-radius:22px;padding:18px 18px 16px;margin:4px 0 14px;overflow:hidden}
+.hero::before{content:"";position:absolute;left:0;top:18px;bottom:18px;width:4px;border-radius:0 3px 3px 0;background:var(--sc)}
+.hero-eyebrow{font-size:15px;font-weight:600;color:color-mix(in srgb,var(--sc) 75%,var(--ink))}
+.hero-title{display:block;font-family:var(--display);font-size:28px;font-weight:700;letter-spacing:-.02em;line-height:1.15;margin-top:2px;text-align:left}
+.hero-meta{font-size:16px;color:var(--ink-2);margin-top:4px;line-height:1.4}
+.hero-why{font-size:15px;color:var(--ink-2);margin-top:8px;line-height:1.4}
+.hero-why.warn{color:var(--warn)}
+.hero .tl{margin-top:16px;background:color-mix(in srgb,var(--ink) 6%,transparent)}
+.hero .tl .w{background:color-mix(in srgb,var(--ink) 9%,transparent)}
+.hero .tl .b{background:color-mix(in srgb,var(--ink) 20%,transparent)}
+.tl-marks{position:relative;height:16px;font-size:11px;color:var(--muted)}
+.tl-marks span{position:absolute;transform:translateX(-50%);top:2px}
+.hero-acts{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.hero-acts .btn.quiet{background:color-mix(in srgb,var(--bg) 70%,transparent)}
+.hero.done-week{--sc:var(--accent)}
+.hero.done-week::before{display:none}
+.hero.done-week .hero-title{font-size:22px}
+
+.nudge{display:flex;justify-content:space-between;align-items:center;gap:12px;width:100%;min-height:52px;padding:12px 16px;margin:0 0 10px;border-radius:14px;background:var(--fill);font-size:15px;text-align:left;color:var(--ink)}
+.nudge-go{flex:none;color:var(--accent);font-weight:600}
+
+.prog{display:grid;grid-template-columns:1fr auto;align-items:end;column-gap:16px;row-gap:8px;margin:6px 0 4px}
+.prog-text{display:flex;flex-direction:column;gap:2px;font-size:15px}
+.prog-text b{font-size:22px;font-weight:600;letter-spacing:-.01em}
+.prog-bar{grid-column:1;display:flex;gap:2px;height:8px;border-radius:4px;background:var(--fill);overflow:hidden}
+.prog-bar i{display:block;height:100%;background:var(--sc,var(--accent))}
+.prog .bars{grid-column:2;grid-row:1 / span 2}
+
+.wl{margin-top:14px;border-top:1px solid var(--line)}
+.wl-row{display:grid;grid-template-columns:48px 1fr;gap:10px;align-items:start;border-bottom:1px solid var(--line);min-height:56px}
+.wl-day{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:0;min-height:56px;width:48px;color:var(--muted)}
+.wl-day span{font-size:13px;line-height:1.2}
+.wl-day b{font-size:19px;font-weight:600;line-height:1.2;color:var(--ink)}
+.wl-row.today .wl-day b{color:var(--accent-ink);background:var(--accent);border-radius:999px;min-width:32px;padding:0 6px;line-height:32px;height:32px;margin-top:1px}
+.wl-row.today .wl-day span{color:var(--accent);font-weight:600}
+.wl-row.past .wl-day b{color:var(--muted)}
+.wl-items{display:flex;flex-direction:column;justify-content:center;min-height:56px;padding:4px 0;min-width:0}
+.wl-item{display:flex;align-items:center;gap:10px;width:100%;min-height:48px;text-align:left}
+.wl-item .dot{margin-top:0}
+.wl-name{font-size:17px;font-weight:500;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wl-meta{margin-left:auto;flex:none;font-size:15px;color:var(--ink-2)}
+.wl-tag{flex:none;font-size:12px;font-weight:500;color:var(--ink-2);background:var(--fill);border-radius:6px;padding:2px 7px}
+.wl-item.done .wl-name::after{content:" ✓";color:var(--sc,var(--accent))}
+.wl-item.skipped .wl-name,.wl-item.dropped .wl-name{color:var(--muted);text-decoration:line-through}
+.wl-row.past .wl-item.planned .wl-name{color:var(--muted)}
+.wl-item.extra .dot{background:transparent;box-shadow:inset 0 0 0 2px var(--sc,var(--walk))}
+.wl-rest{font-size:15px;color:var(--muted);line-height:56px}
+.wl-note{font-size:14px;color:var(--muted);padding:0 0 10px 20px;line-height:1.35}
+
+/* chips appear only while typing a change */
+.cmdbar:not(:focus-within) .chips-row{display:none}
+.wl-row.rest{min-height:40px;grid-template-columns:auto 1fr;gap:14px}
+.wl-row.rest .wl-day{flex-direction:row;gap:6px;min-height:40px;width:auto;min-width:48px;justify-content:flex-start}
+.wl-row.rest .wl-day b{font-size:15px;font-weight:500;color:var(--muted)}
+.wl-row.rest .wl-items{min-height:40px;padding:0}
+.wl-row.rest .wl-rest{line-height:40px}
+.nudge .dot{display:inline-block;vertical-align:1px;margin:0 4px 0 0}

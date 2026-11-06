@@ -225,7 +225,7 @@ function place(wk, week, opts = {}) {
           const f = firstFail[p];
           return f && f !== 'noWin' ? reasonText(f, D[p]) : noWindowReason(wk, p, s);
         };
-        if (s.anchor && d === p && !offTod) s.why = L(`Якорь недели${s.note ? ' — ' + s.note : ''}: держу как есть`, `Anchor of the week${s.note ? ' — ' + s.note : ''}: kept as is`);
+        if (s.anchor && d === p && !offTod) s.why = QUIET + L(`Якорь недели${s.note ? ' — ' + s.note : ''}: держу как есть`, `Anchor of the week${s.note ? ' — ' + s.note : ''}: kept as is`);
         else if (pass === 'short') s.why = L(`Полного окна на ${fDur(s.short)} нет — сократил до ${fDur(min)}`, `No full ${fDur(s.short)} window — cut to ${fDur(min)}`);
         else if (c) s.why = L(`${prefWhy()} → ${D[d]} ${todWord(start)}. Заметь: ${reasonText(c, D[d])}`, `${prefWhy()} → ${D[d]} ${todWord(start)}. Heads-up: ${reasonText(c, D[d])}`);
         else if (d === p || d === s._from) s.why = offTod
@@ -758,33 +758,133 @@ function weekHTML() {
     h += `<section class="card change"><div class="card-head"><h3>${lastChange.info ? L('Ответ', 'Reply') : L('Что поменялось', 'What changed')}</h3>${!lastChange.info ? `<button class="nav-btn link" data-a="undo">${L('Отменить', 'Undo')}</button>` : `<button class="nav-btn link" data-a="dismiss">${L('Ок', 'OK')}</button>`}</div>
       ${lastChange.text ? `<p class="muted" style="font-size:13px">«${esc(lastChange.text)}»</p>` : ''}<ul>${lastChange.lines.map(l => `<li>${esc(l)}</li>`).join('')}</ul></section>`;
   }
-  h += cardsHTML(wk, week);
   if (!week) {
+    // A past week with no plan: what Garmin recorded, days with nothing left out.
     const past = {sessions: [], log: [], away: [], sick: [], cal: {}, history: true};
     const ex = extras(wk, past), tr = ex.filter(a => trainingSport(a.sport)), min = tr.reduce((a, x) => a + x.min, 0);
+    h += cardsHTML(wk, week);
     if (view.loading) return h + `<div class="empty"><b>${L('Загружаю историю из Garmin…', 'Loading history from Garmin…')}</b></div></main>`;
     if (!ex.length) return h + `<div class="empty"><b>${L('Тренировок нет', 'No workouts')}</b>${state.local.acts?.from && wk < state.local.acts.from ? L('История из Garmin загружается, когда листаешь назад', 'Garmin history loads as you browse back') : L('Плана на эту неделю не было, и Garmin ничего не записал', 'No plan this week, and nothing recorded in Garmin')}</div></main>`;
-    h += `<div class="summary"><div><div class="big num">${fHours(min)}</div><div class="hint">${L(`${tr.length} трен. по Garmin · плана не было`, `${tr.length} workouts from Garmin · no plan`)}</div></div>${loadBars(wk)}</div>`;
-    for (let i = 0; i < 7; i++) h += dayHTML(wk, past, i, 7, []);
-    return h + '</main>';
+    h += progressHTML(wk, [], tr, min, 0, `${tr.length} ${L('трен. по Garmin', 'from Garmin')}`);
+    return h + weekListHTML(wk, past, [], 7) + '</main>';
   }
-  // summary
   const effs = week.sessions.map(s => effective(wk, s));
-  const counted = effs.filter(s => s.status === 'planned' || s.status === 'done');
-  const planMin = counted.filter(s => s.day != null).reduce((a, s) => a + s.min, 0);
-  const doneMin = effs.filter(s => s.status === 'done').reduce((a, s) => a + (s.act?.min ?? s.min), 0) + extras(wk, week).filter(a => trainingSport(a.sport)).reduce((a, x) => a + x.min, 0);
-  const nPlan = counted.filter(s => s.day != null).length;
-  h += `<div class="summary"><div><div class="big num">${doneMin ? fHours(doneMin) + `<small>${L(' из ', ' of ')}${fHours(planMin)}</small>` : fHours(planMin)}</div>
-    <div class="hint">${doneMin ? L(`сделано · ${nPlan} трен. в плане`, `done · ${nPlan} planned`) : L(`${nPlan} ${nPlan === 1 ? 'тренировка' : nPlan < 5 ? 'тренировки' : 'тренировок'} в плане`, `${nPlan} sessions planned`)}</div></div>${loadBars(wk)}</div>`;
+  const counted = effs.filter(s => (s.status === 'planned' || s.status === 'done') && s.day != null);
+  const planMin = counted.reduce((a, s) => a + s.min, 0);
+  const doneS = effs.filter(s => s.status === 'done'), ex = extras(wk, week).filter(a => trainingSport(a.sport));
+  const doneMin = doneS.reduce((a, s) => a + (s.act?.min ?? s.min), 0) + ex.reduce((a, x) => a + x.min, 0);
+  h += alertsHTML(wk);
+  h += heroHTML(wk, week, effs, ti);
   h += painLine();
-  // days
-  for (let i = 0; i < 7; i++) h += dayHTML(wk, week, i, ti, effs);
+  h += cardsHTML(wk, week);
+  h += progressHTML(wk, doneS, ex, doneMin, planMin, L(`${doneS.length + ex.length} из ${counted.length + ex.length} трен.`, `${doneS.length + ex.length} of ${counted.length + ex.length} sessions`));
+  h += weekListHTML(wk, week, effs, ti);
   const un = unplacedAll(week);
-  if (un.length) h += `<div class="section-title">${L('Не влезло', 'Didn’t fit')}</div><div class="list">` + un.map(s => `<button class="sess" data-a="open" data-id="${s.id}"><span class="dot ${KINDS[s.kind].sport}"></span><span class="t"><b>${esc(kName(s.kind))}</b> <span class="meta">· ${fDur(s.min)}</span><span class="why">${esc(s.why)}</span></span></button>`).join('') + `</div>`;
+  if (un.length) h += `<div class="section-title">${L('Не влезло', 'Didn’t fit')}</div><div class="wl">` + un.map(s => `<div class="wl-row"><span class="wl-day"></span><div class="wl-items"><button class="wl-item" data-a="open" data-id="${s.id}"><span class="dot ${KINDS[s.kind].sport}"></span><span class="wl-name">${esc(kName(s.kind))}</span><span class="wl-meta num">${fDur(s.min)}</span></button><span class="wl-note">${esc(s.why)}</span></div></div>`).join('') + `</div>`;
   if (week.log.length) {
-    h += `<details class="log" ${logOpen ? 'open' : ''}><summary><span>${L('История изменений', 'Change history')}</span><span class="log-n num">${week.log.length}</span><svg class="log-chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary><div class="list">` + week.log.slice(0, 8).map(e => `<div class="row" style="display:block"><span class="t"><b>«${esc(e.text)}»</b> <span class="muted" style="font-size:13px">${new Date(e.at).toLocaleString(lang === 'ru' ? 'ru-RU' : 'en-GB', {weekday: 'short', hour: '2-digit', minute: '2-digit'})}</span>${e.lines.map(l => `<span style="font-size:14px;color:var(--ink-2)">→ ${esc(l)}</span>`).join('')}</span></div>`).join('') + `</div></details>`;
+    h += `<details class="log" ${logOpen ? 'open' : ''}><summary><span>${L('История изменений', 'Change history')}</span><span class="log-n num">${week.log.length}</span><svg class="log-chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary><div class="list">` + week.log.slice(0, 8).map(e => `<div class="row" style="display:block"><span class="t"><b>«${esc(e.text)}»</b> <span class="muted" style="font-size:14px">${new Date(e.at).toLocaleString(lang === 'ru' ? 'ru-RU' : 'en-GB', {weekday: 'short', hour: '2-digit', minute: '2-digit'})}</span>${e.lines.map(l => `<span style="font-size:15px;color:var(--ink-2)">→ ${esc(l)}</span>`).join('')}</span></div>`).join('') + `</div></details>`;
   }
   return h + '</main>';
+}
+
+// The one thing to do next: today's session, or the next one ahead. Its day's calendar is drawn here and only here.
+function nextUp(effs, ti) {
+  const from = Math.max(ti, 0);
+  return effs.filter(s => s.status === 'planned' && s.day != null && s.day >= from && !(s.day === ti && s.start != null && s.start + s.min < nowMin()))
+    .sort((a, b) => a.day - b.day || (a.start ?? 0) - (b.start ?? 0))[0] || null;
+}
+const DAY_FULL = () => L(['понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота', 'воскресенье'], ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']);
+function dayWord(wk, d, ti) {
+  if (d === ti) return L('Сегодня', 'Today');
+  if (d === ti + 1) return L('Завтра', 'Tomorrow');
+  const w = DAY_FULL()[d]; return `${w[0].toUpperCase()}${w.slice(1)}, ${addDays(parseYmd(wk), d).getDate()}`;
+}
+function dayTimeline(wk, d, ti, items) {
+  const marks = [9, 12, 18].map(h2 => `<span style="left:${pct(h2 * 60)}%">${h2}</span>`).join('');
+  return `<div class="tl" aria-hidden="true">${blocks(wk, d).map(b => `<i class="${b.work ? 'w' : 'b'}" style="left:${pct(b.s)}%;width:${pct(b.e) - pct(b.s)}%"></i>`).join('')}${items.map(x => `<i class="${x.cls}" style="left:${pct(x.s)}%;width:${Math.max(1, pct(x.s + x.min) - pct(x.s))}%"></i>`).join('')}${d === ti ? `<i class="now" style="left:${pct(nowMin())}%"></i>` : ''}</div><div class="tl-marks num" aria-hidden="true">${marks}</div>`;
+}
+function heroHTML(wk, week, effs, ti) {
+  const s = nextUp(effs, ti);
+  if (!s) {
+    if (ti > 6 || !week.sessions.length) return '';
+    return `<section class="hero done-week"><div class="hero-eyebrow">${L('Неделя', 'This week')}</div><div class="hero-title">${L('Всё по плану на эту неделю позади', 'Everything planned this week is behind you')}</div><div class="hero-meta">${L('Скажи «добавь вел в вс», если хочется ещё', 'Say “add a ride on Sun” if you want more')}</div></section>`;
+  }
+  const sp = KINDS[s.kind].sport, why = s.was || whyLoud(s.why) ? whyText(s.why) : '';
+  const today = s.day === ti;
+  const acts = today
+    ? `<button class="btn sm primary" data-a="mark" data-id="${s.id}" data-st="done">${L('Сделал', 'Done')}</button><button class="btn sm quiet" data-a="mark" data-id="${s.id}" data-st="skipped">${L('Пропустил', 'Skip')}</button><button class="btn sm quiet" data-a="open" data-id="${s.id}">${L('Перенести', 'Move')}</button>`
+    : `<button class="btn sm quiet" data-a="open" data-id="${s.id}">${L('Перенести', 'Move')}</button><button class="btn sm quiet" data-a="mark" data-id="${s.id}" data-st="skipped">${L('Не смогу', 'Can’t make it')}</button>`;
+  return `<section class="hero ${sp}">
+    <div class="hero-eyebrow num">${esc(dayWord(wk, s.day, ti))}${s.start != null ? ' · ' + hm(s.start) : ''}</div>
+    <button class="hero-title" data-a="open" data-id="${s.id}">${esc(kName(s.kind))}</button>
+    <div class="hero-meta">${fDur(s.min)} · ${esc(kDetail(s.kind))}</div>
+    ${s.was ? `<div class="hero-why">${L('Вместо', 'Instead of')} ${esc(kName(s.was).toLowerCase())}: ${esc(why)}</div>` : why ? `<div class="hero-why">${esc(why)}</div>` : ''}
+    ${s.caution ? `<div class="hero-why warn">${esc(s.caution)}</div>` : ''}
+    ${s.start != null ? dayTimeline(wk, s.day, ti, [{cls: `s ${sp}`, s: s.start, min: s.min}]) : ''}
+    <div class="hero-acts">${acts}</div></section>`;
+}
+// Done time as segments in each sport's colour, against the plan.
+function progressHTML(wk, doneS, ex, doneMin, planMin, label) {
+  const total = Math.max(planMin, doneMin, 1);
+  const segs = [...doneS.map(s => ({sp: KINDS[s.kind].sport, m: s.act?.min ?? s.min})), ...ex.map(a => ({sp: a.sport, m: a.min}))];
+  // Nothing done yet: the plan's size is the news, and an empty bar would be an empty band.
+  if (!doneMin) return `<div class="prog"><div class="prog-text"><span><b class="num">${fHours(planMin)}</b> <span class="muted">${L('в плане', 'planned')}</span></span><span class="muted">${esc(label.replace(/^0 (из|of) /, ''))}</span></div>${loadBars(wk)}</div>`;
+  return `<div class="prog"><div class="prog-text"><span><b class="num">${fHours(doneMin)}</b>${planMin ? `<span class="muted">${L(' из ', ' of ')}${fHours(planMin)}</span>` : ''}</span><span class="muted">${esc(label)}</span></div>
+    <div class="prog-bar" role="img" aria-label="${esc(L('Сделано ', 'Done ') + fHours(doneMin) + (planMin ? L(' из ', ' of ') + fHours(planMin) : ''))}">${segs.map(x => `<i class="${x.sp}" style="width:${x.m / total * 100}%"></i>`).join('')}</div>${loadBars(wk)}</div>`;
+}
+// One line per day: what's on, nothing more. Tap a day for its calendar and free windows; tap a session for details.
+function weekListHTML(wk, week, effs, ti) {
+  const D = DAYS();
+  let h = '<div class="wl">', rest = null;
+  const flush = () => {
+    if (!rest) return;
+    const [a, z, word] = rest, da = addDays(parseYmd(wk), a), dz = addDays(parseYmd(wk), z);
+    h += `<div class="wl-row rest${z < ti && !week.history ? ' past' : ''}${a <= ti && ti <= z ? ' has-today' : ''}"><button class="wl-day" data-a="day" data-i="${a}"><span>${a === z ? D[a] : `${D[a]}–${D[z]}`}</span><b class="num">${a === z ? da.getDate() : `${da.getDate()}–${dz.getDate()}`}</b></button><div class="wl-items"><span class="wl-rest">${word}</span></div></div>`;
+    rest = null;
+  };
+  for (let i = 0; i < 7; i++) {
+    const date = addDays(parseYmd(wk), i);
+    const sess = effs.filter(s => s.day === i).sort((a, b) => (a.start ?? 0) - (b.start ?? 0));
+    const ex = extras(wk, week).filter(a => a.start.slice(0, 10) === ymd(date));
+    if (week.history && !ex.length) continue;
+    const away = (week.away || []).includes(i), sick = (week.sick || []).includes(i);
+    let items = '';
+    for (const s of sess) {
+      const meta = s.status === 'done' && s.act ? `${fDur(s.act.min)}${s.act.km ? ' · ' + fNum(s.act.km, 1) + L(' км', ' km') : ''}` : `${s.start != null ? hm(s.start) + ' · ' : ''}${fDur(s.min)}`;
+      const note = s.status === 'skipped' ? L('пропущено', 'skipped') : s.status === 'dropped' ? L('убрано', 'dropped') : s.was ? L('замена', 'swapped') : s.status === 'planned' && i < ti ? L('отметь', 'mark it') : '';
+      items += `<button class="wl-item ${s.status}" data-a="open" data-id="${s.id}"><span class="dot ${KINDS[s.kind].sport}"></span><span class="wl-name">${esc(kName(s.kind))}</span>${note ? `<span class="wl-tag">${note}</span>` : ''}<span class="wl-meta num">${esc(meta)}</span></button>`;
+    }
+    for (const a of ex) items += `<button class="wl-item${week.history ? ' done' : ' extra'}" data-a="act" data-id="${a.id}"><span class="dot ${a.sport}"></span><span class="wl-name">${esc(a.name || a.type)}</span>${week.history ? '' : `<span class="wl-tag">${L('сверх плана', 'extra')}</span>`}<span class="wl-meta num">${fDur(a.min)}${a.km ? ' · ' + fNum(a.km, 1) + L(' км', ' km') : ''}</span></button>`;
+    if (!items && i !== ti) {
+      const word = away ? L('Поездка', 'Away') : sick ? L('Болезнь', 'Ill') : L('Отдых', 'Rest');
+      if (rest && rest[2] === word && rest[1] === i - 1) rest[1] = i; else { flush(); rest = [i, i, word]; }
+      continue;
+    }
+    flush();
+    if (!items) items = `<span class="wl-rest">${away ? L('Поездка', 'Away') : sick ? L('Болезнь', 'Ill') : L('Отдых', 'Rest')}</span>`;
+    h += `<div class="wl-row${i === ti ? ' today' : ''}${i < ti && !week.history ? ' past' : ''}"><button class="wl-day" data-a="day" data-i="${i}" aria-label="${esc(DAY_FULL()[i])} ${date.getDate()}"><span>${D[i]}</span><b class="num">${date.getDate()}</b></button><div class="wl-items">${items}</div></div>`;
+  }
+  flush();
+  return h + '</div>';
+}
+// Things that need a decision before the plan can be trusted: sign-in, calendar, a doctor flag.
+function alertsHTML(wk) {
+  let h = '';
+  if (!cloud.user && cloud.client) h += `<button class="nudge" data-a="settings"><span>${L('Войди — подтяну календарь и Garmin', 'Sign in to bring in calendar and Garmin')}</span><span class="nudge-go">${L('Войти', 'Sign in')} ›</span></button>`;
+  else if (cloud.user && cloud.cals && !cloud.cals.length && !(state.local.busy[wk]?.events || []).some(e => e.cal === 'file')) h += `<button class="nudge" data-a="settings"><span>${L('Подключи календарь — план встанет в свободные окна', 'Connect your calendar so the plan fits your free time')}</span><span class="nudge-go">${L('Подключить', 'Connect')} ›</span></button>`;
+  const ti = todayIdx(wk);
+  if (ti >= 0 && ti <= 6 && !state.checks[todayStr()]) h += `<button class="nudge" data-a="pain-open"><span>${L('Как сегодня? Боль не отмечена', 'How is it today? Pain not logged')}</span><span class="nudge-go">${L('Отметить', 'Log')} ›</span></button>`;
+  const g = gate();
+  if (g.known && (g.doctor || g.stop)) h += `<section class="card alert"><div class="card-head"><h3>${g.doctor ? L('Напиши врачу', 'Message your doctor') : L('Стоп — напиши физио', 'Stop — message your physio')}</h3><button class="nav-btn link" data-a="pain-redo">${L('Изменить', 'Edit')}</button></div><p>${esc(g.doctor ? L(`Сидя ${g.c.sit}/10, ходьба ${g.c.walk}/10${g.c.rest ? ', в покое' : ''}: по твоим правилам это повод сразу написать. Бег, вел и стена на паузе.`, `Sitting ${g.c.sit}/10, walking ${g.c.walk}/10${g.c.rest ? ', at rest' : ''}: by your rules, message them now. Running, riding and climbing paused.`) : L(`${g.max}/10 — бег, вел и стена на паузе.`, `${g.max}/10 — running, riding and climbing paused.`))}</p></section>`;
+  return h;
+}
+function painSheet() {
+  const seg = (k) => `<div class="seg" role="group">${[0, 1, 2, 3].map(v => `<button data-a="pain" data-k="${k}" data-v="${v}" aria-pressed="${pending[k] === v}">${v === 3 ? '3+' : v}</button>`).join('')}</div>`;
+  openSheet(`<div class="sheet-head"><h2>${L('Как сегодня?', 'How is it today?')}</h2><button class="nav-btn" data-a="close-sheet">${L('Отмена', 'Cancel')}</button></div><div class="sheet-scroll">
+    <p class="hint">${L('Боль 0–10. От этого зависит, что можно сегодня и завтра.', 'Pain 0–10. It decides what’s on today and tomorrow.')}</p>
+    <div class="pain"><span>${L('Сидя', 'Sitting')}</span>${seg('sit')}<span>${L('При ходьбе', 'Walking')}</span>${seg('walk')}</div>
+    <label class="check" style="margin-top:14px"><input type="checkbox" id="painRest" ${pending.rest ? 'checked' : ''}> ${L('Болело ночью или в покое', 'Hurt at night or at rest')}</label>
+    <div class="stack" style="padding-top:18px"><button class="btn primary" data-a="pain-save" ${pending.sit == null || pending.walk == null ? 'disabled' : ''}>${L('Записать', 'Save')}</button></div></div>`, {pain: true});
 }
 function painLine() {
   const g = gate();
@@ -802,20 +902,6 @@ function loadBars(wk) {
 function cardsHTML(wk, week) {
   let h = '';
   const ti = todayIdx(wk);
-  if (!cloud.user && cloud.client) h += `<section class="card"><h3>${L('Войди, чтобы подтянуть календарь и Garmin', 'Sign in to bring in your calendar and Garmin')}</h3><p>${L('Тот же аккаунт, что в «Зале».', 'Same account as the gym app.')}</p><div class="acts"><button class="btn sm primary" data-a="settings">${L('Войти', 'Sign in')}</button></div></section>`;
-  else if (cloud.user && cloud.cals && !cloud.cals.length && !(state.local.busy[wk]?.events || []).some(e => e.cal === 'file')) h += `<section class="card"><h3>${L('Подключи календарь', 'Connect your calendar')}</h3><p>${L('План встанет в реальные свободные окна. Нужна секретная ссылка iCal — это пара минут.', 'The plan will fit your real free time. You need a secret iCal link — two minutes.')}</p><div class="acts"><button class="btn sm primary" data-a="settings">${L('Подключить', 'Connect')}</button></div></section>`;
-  // morning pain check
-  if (ti >= 0 && ti <= 6 && !state.checks[todayStr()]) {
-    const seg = (k) => `<div class="seg" role="group">${[0, 1, 2, 3].map(v => `<button data-a="pain" data-k="${k}" data-v="${v}" aria-pressed="${pending[k] === v}">${v === 3 ? '3+' : v}</button>`).join('')}</div>`;
-    h += `<section class="card"><h3>${L('Как сегодня?', 'How is it today?')}</h3><p>${L('Боль 0–10. От этого зависит, что можно сегодня и дальше.', 'Pain 0–10. It decides what’s on today and after.')}</p>
-      <div class="pain"><span>${L('Сидя', 'Sitting')}</span>${seg('sit')}<span>${L('При ходьбе', 'Walking')}</span>${seg('walk')}</div>
-      <label class="check" style="margin-top:10px"><input type="checkbox" id="painRest" ${pending.rest ? 'checked' : ''}> ${L('Болело ночью или в покое', 'Hurt at night or at rest')}</label>
-      <div class="acts"><button class="btn sm primary" data-a="pain-save" ${pending.sit == null || pending.walk == null ? 'disabled' : ''}>${L('Записать', 'Save')}</button></div></section>`;
-  }
-  const g = gate();
-  if (g.known && (g.doctor || g.stop)) {
-    h += `<section class="card alert"><div class="card-head"><h3>${g.doctor ? L('Напиши врачу', 'Message your doctor') : L('Стоп — напиши физио', 'Stop — message your physio')}</h3><button class="nav-btn link" data-a="pain-redo">${L('Изменить', 'Edit')}</button></div><p>${esc(g.doctor ? L(`Сидя ${g.c.sit}/10, ходьба ${g.c.walk}/10${g.c.rest ? ', в покое' : ''}: по твоим правилам это повод сразу написать. Бег, вел и стена на паузе.`, `Sitting ${g.c.sit}/10, walking ${g.c.walk}/10${g.c.rest ? ', at rest' : ''}: by your rules, message them now. Running, riding and climbing paused.`) : L(`${g.max}/10 — бег, вел и стена на паузе.`, `${g.max}/10 — running, riding and climbing paused.`))}</p></section>`;
-  }
   // ask instead of carrying goals that haven't happened for weeks
   if (week && state.local.acts?.linked) {
     const acts = state.local.acts.list, cutoff = ymd(addDays(new Date(), -28));
@@ -826,8 +912,8 @@ function cardsHTML(wk, week) {
       if (acts.some(x => x.sport === sp && x.start.slice(0, 10) >= cutoff)) continue;
       const n = state.template.filter(t => KINDS[t.kind].sport === sp).length;
       const name = L(SPORTS[sp][0], SPORTS[sp][1]);
-      h += `<section class="card"><h3>${L(`${name}: 4 недели без тренировок`, `${name}: none in 4 weeks`)}</h3><p>${L(`В плане ${n} в неделю. Оставить так, или честнее пока меньше?`, `The plan has ${n} a week. Keep it, or be honest and do less for now?`)}</p>
-        <div class="acts"><button class="btn sm quiet" data-a="ask" data-s="${sp}" data-c="keep">${L('Оставить', 'Keep')}</button>${n > 1 ? `<button class="btn sm quiet" data-a="ask" data-s="${sp}" data-c="one">${L('Одна в неделю', 'Once a week')}</button>` : ''}<button class="btn sm quiet" data-a="ask" data-s="${sp}" data-c="drop">${L('Убрать пока', 'Drop for now')}</button></div></section>`;
+      // A question is one line; its answers live in a sheet, so the plan stays on top.
+      h += `<button class="nudge" data-a="ask-open" data-s="${sp}" data-n="${n}"><span><span class="dot ${sp}"></span> ${L(`${name}: 4 недели без тренировок`, `${name}: none in 4 weeks`)}</span><span class="nudge-go">${L('Решить', 'Decide')} ›</span></button>`;
       break;
     }
   }
@@ -843,8 +929,7 @@ function cardsHTML(wk, week) {
       const days = []; for (let i = 0; i < 7; i++) { const ds = ymd(addDays(parseYmd(wk), i)); if (e.s.slice(0, 10) <= ds && ds < e.e.slice(0, 10) && i >= ti) days.push(i); }
       if (!days.length) continue;
       seen.add(key);
-      h += `<section class="card"><h3>«${esc(e.title)}» · ${days.map(d => DAYS()[d]).join(', ')}</h3><p>${L('Это поездка? Если да — уберу тренировки с этих дней.', 'Is this a trip? If so, I’ll move sessions off these days.')}</p>
-        <div class="acts"><button class="btn sm primary" data-a="trip" data-k="${esc(key)}" data-days="${days.join(',')}" data-yes="1">${L('Да, поездка', 'Yes, a trip')}</button><button class="btn sm quiet" data-a="trip" data-k="${esc(key)}">${L('Нет, тренируюсь', 'No, I’ll train')}</button></div></section>`;
+      h += `<button class="nudge" data-a="trip-open" data-k="${esc(key)}" data-days="${days.join(',')}" data-t="${esc(e.title)}"><span>«${esc(e.title)}» · ${days.map(d => DAYS()[d]).join(', ')} — ${L('поездка?', 'a trip?')}</span><span class="nudge-go">${L('Ответить', 'Answer')} ›</span></button>`;
     }
   }
   return h;
@@ -855,34 +940,6 @@ document.addEventListener('toggle', ev => { if (ev.target.classList?.contains('l
 
 const TL_FROM = 6 * 60, TL_TO = 23 * 60;
 const pct = m => Math.max(0, Math.min(100, (m - TL_FROM) / (TL_TO - TL_FROM) * 100));
-function dayHTML(wk, week, i, ti, effs) {
-  const D = DAYS(), date = addDays(parseYmd(wk), i);
-  const sess = effs.filter(s => s.day === i).sort((a, b) => (a.start ?? 0) - (b.start ?? 0));
-  const ex = extras(wk, week).filter(a => a.start.slice(0, 10) === ymd(date));
-  const evs = dayEvents(wk, i), allDay = allDayEvents(wk, i);
-  const bl = blocks(wk, i);
-  const tags = [...(week.away || []).includes(i) ? [L('поездка', 'away')] : [], ...(week.sick || []).includes(i) ? [L('болезнь', 'ill')] : [], ...allDay.map(e => e.title)].slice(0, 2);
-  const busyN = evs.filter(e => !e.free).length;
-  const dayName = (lang === 'ru' ? ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье'] : ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'])[i];
-  let h = `<section class="day${i < ti && !week.history ? ' past' : ''}${i === ti ? ' today' : ''}"><button class="day-head" data-a="day" data-i="${i}"><b>${dayName} <span class="num">${date.getDate()}</span>${i === ti ? `<span class="tag now-tag">${L('сегодня', 'today')}</span>` : ''}${tags.map(t => `<span class="tag">${esc(t)}</span>`).join('')}</b><span>${busyN && i >= ti ? L(`${busyN} в календаре`, `${busyN} in calendar`) : ''}</span></button>`;
-  if (i < ti && !sess.length && !ex.length) return h + '</section>';
-  if (i >= ti) h += `<div class="tl" aria-hidden="true">${bl.map(b => `<i class="${b.work ? 'w' : 'b'}" style="left:${pct(b.s)}%;width:${pct(b.e) - pct(b.s)}%"></i>`).join('')}${sess.filter(s => s.start != null && s.status !== 'skipped' && s.status !== 'dropped').map(s => `<i class="s ${KINDS[s.kind].sport}" style="left:${pct(s.start)}%;width:${Math.max(1, pct(s.start + (s.act?.min ?? s.min)) - pct(s.start))}%"></i>`).join('')}${ex.map(a => { const st = toMin(a.start.slice(11, 16)); return `<i class="x ${a.sport}" style="left:${pct(st)}%;width:${Math.max(1, pct(st + a.min) - pct(st))}%"></i>`; }).join('')}${i === ti ? `<i class="now" style="left:${pct(nowMin())}%"></i>` : ''}</div>`;
-  for (const s of sess) {
-    const time = s.start != null ? hm(s.start) : '';
-    const meta = s.status === 'done' && s.act ? `${fDur(s.act.min)}${s.act.km ? ' · ' + String(s.act.km).replace('.', L(',', '.')) + L(' км', ' km') : ''} · ${s.act.start}` : `${fDur(s.min)}${time ? ' · ' + time : ''}`;
-    const why = s.status === 'skipped' ? L('Пропущено', 'Skipped') : s.was || whyLoud(s.why) ? whyText(s.why) : '';
-    h += `<button class="sess ${s.status}" data-a="open" data-id="${s.id}"><span class="dot ${KINDS[s.kind].sport}"></span><span class="t"><b>${esc(kName(s.kind))}</b> <span class="meta">· ${esc(meta)}</span>
-      ${s.was ? `<span class="why"><span class="was">${esc(kName(s.was))}</span> — ${esc(why)}</span>` : why ? `<span class="why">${esc(why)}</span>` : ''}${s.caution ? `<span class="why" style="color:var(--warn)">${esc(s.caution)}</span>` : ''}</span></button>`;
-    if (s.status === 'planned' && i < ti) h += `<div class="pend"><button class="btn sm quiet" data-a="mark" data-id="${s.id}" data-st="done">${L('Сделал', 'Done')}</button><button class="btn sm quiet" data-a="mark" data-id="${s.id}" data-st="skipped">${L('Пропустил', 'Skipped')}</button></div>`;
-  }
-  for (const a of ex) h += `<button class="sess${week.history ? '' : ' extra'}" data-a="act" data-id="${a.id}"><span class="dot ${a.sport}"></span><span class="t"><b>${esc(a.name || a.type)}</b> <span class="meta">· ${fDur(a.min)}${a.km ? ' · ' + String(a.km).replace('.', L(',', '.')) + L(' км', ' km') : ''} · ${a.start.slice(11, 16)}</span>${week.sessions.length ? `<span class="why">${L('Сверх плана — засчитано в неделю', 'Not in the plan — counts for the week')}</span>` : ''}</span></button>`;
-  if (!sess.length && !ex.length && i >= ti) {
-    const w = windows(wk, i, week);
-    const big = w.reduce((m, [a, z]) => Math.max(m, z - a), 0);
-    h += `<p class="free">${(week.away || []).includes(i) ? L('В поездке', 'Away') : big >= 30 ? L(`Отдых · свободно до ${fDur(big)} подряд`, `Rest · up to ${fDur(big)} free`) : L('Отдых · день плотный', 'Rest · packed day')}</p>`;
-  }
-  return h + '</section>';
-}
 
 /* ---------- sheets ---------- */
 let sheetCtx = null;
@@ -1060,8 +1117,10 @@ function sessionSheet(id) {
 function daySheet(i) {
   const wk = view.wk, D = DAYS(), date = addDays(parseYmd(wk), i);
   const evs = [...allDayEvents(wk, i).map(e => ({t: L('весь день', 'all day'), title: e.title})), ...dayEvents(wk, i).map(e => ({t: `${hm(e.s)}–${hm(e.e)}`, title: e.title + (e.free ? L(' (свободно)', ' (free)') : '')}))];
-  const w = state.weeks[wk] ? windows(wk, i, state.weeks[wk]) : [];
-  openSheet(`<div class="sheet-head"><h2>${D[i]} ${date.getDate()}</h2><button class="nav-btn" data-a="close-sheet">${L('Готово', 'Done')}</button></div><div class="sheet-scroll">
+  const week = state.weeks[wk], w = week ? windows(wk, i, week) : [], ti = todayIdx(wk);
+  const items = (week?.sessions || []).map(s => effective(wk, s)).filter(s => s.day === i && s.start != null && (s.status === 'planned' || s.status === 'done')).map(s => ({cls: `s ${KINDS[s.kind].sport}`, s: s.start, min: s.act?.min ?? s.min}));
+  openSheet(`<div class="sheet-head"><h2>${esc(dayWord(wk, i, ti))}</h2><button class="nav-btn" data-a="close-sheet">${L('Готово', 'Done')}</button></div><div class="sheet-scroll">
+    ${dayTimeline(wk, i, ti, items)}<div style="height:12px"></div>
     ${evs.length ? `<ul class="evlist">${evs.map(e => `<li><span>${esc(e.t)}</span><span>${esc(e.title)}</span></li>`).join('')}</ul>` : `<p class="hint">${L('В календаре пусто', 'Nothing in the calendar')}</p>`}
     <div class="section-title">${L('Свободные окна', 'Free windows')}</div><p class="num">${w.length ? w.map(([a, z]) => `${hm(a)}–${hm(z)}`).join(' · ') : '—'}</p>
     <p class="hint" style="padding-top:8px">${L(`Учитываю рабочие часы ${state.prefs.work ? state.prefs.workStart + '–' + state.prefs.workEnd + ' (будни)' : 'выкл.'} и ${state.prefs.buffer} мин на дорогу вокруг встреч.`, `Counting work hours ${state.prefs.work ? state.prefs.workStart + '–' + state.prefs.workEnd + ' (weekdays)' : 'off'} and ${state.prefs.buffer} min travel around events.`)}</p></div>`);
@@ -1176,8 +1235,21 @@ document.addEventListener('click', ev => {
     if (st === 'planned') { delete s.act; s.locked = false; place(wk, week); }
     return commit(wk, week, before, st === 'done' ? L('сделал', 'done') : L('вернуть в план', 'back to plan'), [st === 'done' ? L(`${kName(s.kind)} в ${D[s.day]} — сделано`, `${kName(s.kind)} on ${D[s.day]} — done`) : L(`${kName(s.kind)} снова в плане`, `${kName(s.kind)} is back in the plan`)]);
   }
-  if (a === 'pain') { pending[el.dataset.k] = +el.dataset.v; pending.rest = !!$('#painRest')?.checked; render(); return; }
-  if (a === 'pain-redo') { const c = state.checks[todayStr()]; if (c) { Object.assign(pending, c); delete state.checks[todayStr()]; persist(); } render(); return; }
+  if (a === 'pain') { pending[el.dataset.k] = +el.dataset.v; pending.rest = !!$('#painRest')?.checked; painSheet(); return; }
+  if (a === 'pain-open') return painSheet();
+  if (a === 'ask-open') {
+    const sp = el.dataset.s, n = +el.dataset.n, name = L(SPORTS[sp][0], SPORTS[sp][1]);
+    return openSheet(`<div class="sheet-head"><h2>${esc(name)}</h2><button class="nav-btn" data-a="close-sheet">${L('Отмена', 'Cancel')}</button></div><div class="sheet-scroll">
+      <p class="hint">${L(`4 недели без тренировок, а в плане ${n} в неделю. Оставить так, или честнее пока меньше? Спрошу снова через 4 недели.`, `None in 4 weeks, and the plan has ${n} a week. Keep it, or be honest and do less for now? I’ll ask again in 4 weeks.`)}</p>
+      <div class="stack" style="padding-top:16px"><button class="btn quiet" data-a="ask" data-s="${sp}" data-c="keep">${L('Оставить', 'Keep')}</button>${n > 1 ? `<button class="btn quiet" data-a="ask" data-s="${sp}" data-c="one">${L('Одна в неделю', 'Once a week')}</button>` : ''}<button class="btn quiet" data-a="ask" data-s="${sp}" data-c="drop">${L('Убрать пока', 'Drop for now')}</button></div></div>`);
+  }
+  if (a === 'trip-open') {
+    const k = el.dataset.k, ds = el.dataset.days;
+    return openSheet(`<div class="sheet-head"><h2>«${esc(el.dataset.t)}»</h2><button class="nav-btn" data-a="close-sheet">${L('Отмена', 'Cancel')}</button></div><div class="sheet-scroll">
+      <p class="hint">${L('Это поездка? Если да — уберу тренировки с этих дней и найду им место в другие.', 'Is this a trip? If so, I’ll move sessions off these days.')}</p>
+      <div class="stack" style="padding-top:16px"><button class="btn primary" data-a="trip" data-k="${esc(k)}" data-days="${ds}" data-yes="1">${L('Да, поездка', 'Yes, a trip')}</button><button class="btn quiet" data-a="trip" data-k="${esc(k)}">${L('Нет, тренируюсь', 'No, I’ll train')}</button></div></div>`);
+  }
+  if (a === 'pain-redo') { const c = state.checks[todayStr()]; if (c) { Object.assign(pending, c); delete state.checks[todayStr()]; persist(); } render(); return painSheet(); }
   if (a === 'pain-save') {
     pending.rest = !!$('#painRest')?.checked;
     const week = state.weeks[wk], beforeEff = week ? week.sessions.map(s => effective(wk, s)) : [];
@@ -1187,9 +1259,10 @@ document.addEventListener('click', ev => {
     if (!lines.length) lines.push(Math.max(pending.sit, pending.walk) === 0 ? L('0/10 — план без изменений', '0/10 — plan unchanged') : L('План без изменений', 'Plan unchanged'));
     if (week) week.log.unshift({at: new Date().toISOString(), text: L(`боль ${pending.sit}/${pending.walk}`, `pain ${pending.sit}/${pending.walk}`), lines, snap: snapshot(week)});
     persist(); lastChange = {wk, text: L(`боль сидя ${pending.sit}, ходьба ${pending.walk}`, `pain sitting ${pending.sit}, walking ${pending.walk}`), lines, info: true};
-    pending.sit = pending.walk = null; pending.rest = false; render(); return;
+    pending.sit = pending.walk = null; pending.rest = false; closeSheet(); render(); return;
   }
   if (a === 'ask') {
+    closeSheet();
     const sp = el.dataset.s, c = el.dataset.c, week = state.weeks[wk];
     state.asks[sp] = {c, at: todayStr()};
     if (week && c !== 'keep') {
@@ -1202,6 +1275,7 @@ document.addEventListener('click', ev => {
     persist(); render(); return;
   }
   if (a === 'trip') {
+    closeSheet();
     const week = state.weeks[wk]; week.cal = week.cal || {}; week.cal[el.dataset.k] = el.dataset.yes ? 'away' : 'no';
     if (el.dataset.yes) { const ds = el.dataset.days.split(',').map(Number), a1 = ds[0], b1 = ds[ds.length - 1]; return run(a1 === b1 ? L(`уезжаю ${DAYS_RU[a1]}`, `away ${DAYS_EN[a1]}`) : L(`уезжаю ${DAYS_RU[a1]} по ${DAYS_RU[b1]}`, `away ${DAYS_EN[a1]} to ${DAYS_EN[b1]}`)); }
     persist(); render(); return;
@@ -1274,6 +1348,8 @@ document.addEventListener('submit', ev => {
   if (ev.target.id === 'calForm') calAdd();
 });
 document.addEventListener('keydown', ev => { if (ev.key === 'Escape' && !$('#sheet').hidden) closeSheet(); });
+// A chip fills the field without taking focus from it, so the chips row stays open.
+document.addEventListener('pointerdown', ev => { if (ev.target.closest('.chip')) ev.preventDefault(); });
 
 // Debug hook for local testing (busy/acts injection); harmless in production.
 window.trainDebug = {get state() { return state; }, view, run, parse, onBusy, matchActs, render, persist, place, setBusy(wk, events) { state.local.busy[wk] = {at: Date.now(), events}; saveLocal(); onBusy(wk); }, setActs(list) { state.local.acts = {at: Date.now(), list, linked: true}; saveLocal(); for (const wk of Object.keys(state.weeks)) { const week = state.weeks[wk], before = snapshot(week), lines = matchActs(wk, week); if (lines.length) commit(wk, week, before, 'Garmin', lines); } render(); }};
