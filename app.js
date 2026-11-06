@@ -654,20 +654,52 @@ function onBusy(wk) {
   if (lines.length) { place(wk, week); commit(wk, week, before, L('календарь', 'calendar'), lines); }
   else render();
 }
+// Garmin activities are cached on this device only. `from` is how far back the cache reaches;
+// recent weeks refresh every 15 min, older ones are fetched once (history doesn't change).
+function mergeActs(list, from, d) {
+  const a = state.local.acts || {list: []}, byId = new Map((a.list || []).map(x => [x.id, x]));
+  for (const x of list) byId.set(x.id, x);
+  state.local.acts = {...a, list: [...byId.values()].sort((x, y) => x.start.localeCompare(y.start)), linked: d.linked, error: d.error,
+    from: a.from && a.from < from ? a.from : from};
+  saveLocal();
+}
 async function loadActs(force) {
   const a = state.local.acts;
   if (!force && a && Date.now() - a.at < 15 * 60e3) return;
-  const to = new Date(), from = addDays(mondayOf(to), -28);
-  const d = await fn('activities', {from: ymd(from), to: ymd(to)});
+  const to = new Date(), from = ymd(addDays(mondayOf(to), -28));
+  const d = await fn('activities', {from, to: ymd(to)});
   if (d.error) return;
   cloud.gLinked = d.linked;
-  state.local.acts = {at: Date.now(), list: d.activities || [], linked: d.linked, error: d.error};
+  mergeActs(d.activities || [], from, d);
+  state.local.acts.at = Date.now();
   saveLocal();
   for (const wk of Object.keys(state.weeks)) {
     const week = state.weeks[wk], before = snapshot(week), lines = matchActs(wk, week);
     if (lines.length) commit(wk, week, before, 'Garmin', lines, {silent: wk !== view.wk});
   }
   render();
+}
+// Older history: a range [from, to) that the cache doesn't reach yet. Returns how many activities came in.
+const histBusy = {on: false};
+async function loadHistory(from, to) {
+  if (histBusy.on || !cloud.user) return null;
+  histBusy.on = true;
+  try {
+    const d = await fn('activities', {from, to});
+    if (d.error) return null;
+    const before = state.local.acts?.list?.length || 0;
+    mergeActs(d.activities || [], from, d);
+    return (state.local.acts.list.length - before);
+  } finally { histBusy.on = false; }
+}
+// Browsing back past the cache pulls the next 12 weeks at once.
+async function ensureHistory(wk) {
+  const a = state.local.acts;
+  if (!a?.linked || !a.from || wk >= a.from) return;
+  const to = a.from, from = ymd(addDays(parseYmd(wk), -7 * 11));
+  view.loading = true; render();
+  await loadHistory(from, to);
+  view.loading = false; render();
 }
 async function initCloud() {
   if (!CFG.supabaseUrl || !CFG.supabaseKey || !window.supabase) return;
@@ -728,9 +760,13 @@ function weekHTML() {
   }
   h += cardsHTML(wk, week);
   if (!week) {
-    const ex = extras(wk, {sessions: []});
-    h += `<div class="empty"><b>${L('Плана на эту неделю не было', 'No plan for this week')}</b>${ex.length ? L(`Из Garmin: ${ex.length} трен. · ${fHours(ex.reduce((a, x) => a + x.min, 0))}`, `From Garmin: ${ex.length} sessions · ${fHours(ex.reduce((a, x) => a + x.min, 0))}`) : ''}</div></main>`;
-    return h;
+    const past = {sessions: [], log: [], away: [], sick: [], cal: {}, history: true};
+    const ex = extras(wk, past), tr = ex.filter(a => trainingSport(a.sport)), min = tr.reduce((a, x) => a + x.min, 0);
+    if (view.loading) return h + `<div class="empty"><b>${L('Загружаю историю из Garmin…', 'Loading history from Garmin…')}</b></div></main>`;
+    if (!ex.length) return h + `<div class="empty"><b>${L('Тренировок нет', 'No workouts')}</b>${state.local.acts?.from && wk < state.local.acts.from ? L('История из Garmin загружается, когда листаешь назад', 'Garmin history loads as you browse back') : L('Плана на эту неделю не было, и Garmin ничего не записал', 'No plan this week, and nothing recorded in Garmin')}</div></main>`;
+    h += `<div class="summary"><div><div class="big num">${fHours(min)}</div><div class="hint">${L(`${tr.length} трен. по Garmin · плана не было`, `${tr.length} workouts from Garmin · no plan`)}</div></div>${loadBars(wk)}</div>`;
+    for (let i = 0; i < 7; i++) h += dayHTML(wk, past, i, 7, []);
+    return h + '</main>';
   }
   // summary
   const effs = week.sessions.map(s => effective(wk, s));
@@ -828,7 +864,7 @@ function dayHTML(wk, week, i, ti, effs) {
   const tags = [...(week.away || []).includes(i) ? [L('поездка', 'away')] : [], ...(week.sick || []).includes(i) ? [L('болезнь', 'ill')] : [], ...allDay.map(e => e.title)].slice(0, 2);
   const busyN = evs.filter(e => !e.free).length;
   const dayName = (lang === 'ru' ? ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье'] : ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'])[i];
-  let h = `<section class="day${i < ti ? ' past' : ''}${i === ti ? ' today' : ''}"><button class="day-head" data-a="day" data-i="${i}"><b>${dayName} <span class="num">${date.getDate()}</span>${i === ti ? `<span class="tag now-tag">${L('сегодня', 'today')}</span>` : ''}${tags.map(t => `<span class="tag">${esc(t)}</span>`).join('')}</b><span>${busyN && i >= ti ? L(`${busyN} в календаре`, `${busyN} in calendar`) : ''}</span></button>`;
+  let h = `<section class="day${i < ti && !week.history ? ' past' : ''}${i === ti ? ' today' : ''}"><button class="day-head" data-a="day" data-i="${i}"><b>${dayName} <span class="num">${date.getDate()}</span>${i === ti ? `<span class="tag now-tag">${L('сегодня', 'today')}</span>` : ''}${tags.map(t => `<span class="tag">${esc(t)}</span>`).join('')}</b><span>${busyN && i >= ti ? L(`${busyN} в календаре`, `${busyN} in calendar`) : ''}</span></button>`;
   if (i < ti && !sess.length && !ex.length) return h + '</section>';
   if (i >= ti) h += `<div class="tl" aria-hidden="true">${bl.map(b => `<i class="${b.work ? 'w' : 'b'}" style="left:${pct(b.s)}%;width:${pct(b.e) - pct(b.s)}%"></i>`).join('')}${sess.filter(s => s.start != null && s.status !== 'skipped' && s.status !== 'dropped').map(s => `<i class="s" style="left:${pct(s.start)}%;width:${Math.max(1, pct(s.start + (s.act?.min ?? s.min)) - pct(s.start))}%"></i>`).join('')}${ex.map(a => { const st = toMin(a.start.slice(11, 16)); return `<i class="x" style="left:${pct(st)}%;width:${Math.max(1, pct(st + a.min) - pct(st))}%"></i>`; }).join('')}${i === ti ? `<i class="now" style="left:${pct(nowMin())}%"></i>` : ''}</div>`;
   for (const s of sess) {
@@ -839,7 +875,7 @@ function dayHTML(wk, week, i, ti, effs) {
       ${s.was ? `<span class="why"><span class="was">${esc(kName(s.was))}</span> — ${esc(why)}</span>` : why ? `<span class="why">${esc(why)}</span>` : ''}${s.caution ? `<span class="why" style="color:var(--warn)">${esc(s.caution)}</span>` : ''}</span></button>`;
     if (s.status === 'planned' && i < ti) h += `<div class="pend"><button class="btn sm quiet" data-a="mark" data-id="${s.id}" data-st="done">${L('Сделал', 'Done')}</button><button class="btn sm quiet" data-a="mark" data-id="${s.id}" data-st="skipped">${L('Пропустил', 'Skipped')}</button></div>`;
   }
-  for (const a of ex) h += `<div class="sess extra"><span class="dot"></span><span class="t"><b>${esc(a.name || a.type)}</b> <span class="meta">· ${fDur(a.min)}${a.km ? ' · ' + String(a.km).replace('.', L(',', '.')) + L(' км', ' km') : ''} · ${a.start.slice(11, 16)}</span><span class="why">${L('Сверх плана — засчитано в неделю', 'Not in the plan — counts for the week')}</span></span></div>`;
+  for (const a of ex) h += `<div class="sess${week.history ? '' : ' extra'}"><span class="dot${week.history ? ' ' + a.sport : ''}"></span><span class="t"><b>${esc(a.name || a.type)}</b> <span class="meta">· ${fDur(a.min)}${a.km ? ' · ' + String(a.km).replace('.', L(',', '.')) + L(' км', ' km') : ''} · ${a.start.slice(11, 16)}</span>${week.sessions.length ? `<span class="why">${L('Сверх плана — засчитано в неделю', 'Not in the plan — counts for the week')}</span>` : ''}</span></div>`;
   if (!sess.length && !ex.length && i >= ti) {
     const w = windows(wk, i, week);
     const big = w.reduce((m, [a, z]) => Math.max(m, z - a), 0);
@@ -892,7 +928,9 @@ function settingsHTML() {
       <button class="btn ${cloud.google ? 'quiet' : 'primary'}" type="submit" ${cloud.calBusy ? 'disabled' : ''}>${cloud.calBusy ? L('Проверяю…', 'Checking…') : L('Подключить по ссылке', 'Connect by link')}</button></form>
       <label class="btn quiet" style="margin-bottom:24px">${L('Или загрузить файл .ics на эту неделю', 'Or load an .ics file for this week')}<input type="file" id="icsFile" accept=".ics,text/calendar" hidden></label>`;
     const a = state.local.acts;
-    h += `<div class="section-title">Garmin</div><p class="hint" style="padding-bottom:24px">${a?.linked ? L(`Подключён через «Зал» · за 5 недель ${a.list.length} активностей`, `Linked via the gym app · ${a.list.length} activities in 5 weeks`) + (a.error ? ' · ' + esc(a.error) : '') : a?.linked === false ? L('Не подключён. Вставь ключ Personal API в «Зале» → Настройки → Garmin — он общий для обоих приложений.', 'Not linked. Paste your Personal API key in the gym app → Settings → Garmin; it’s shared.') : L('Проверяю…', 'Checking…')}</p>`;
+    const since = a?.from ? parseYmd(a.from).toLocaleDateString(lang === 'ru' ? 'ru-RU' : 'en-GB', {day: 'numeric', month: 'short', year: 'numeric'}) : '';
+    h += `<div class="section-title">Garmin</div><p class="hint" style="padding-bottom:12px">${a?.linked ? L(`Подключён через «Зал» · ${a.list.length} активностей с ${since}`, `Linked via the gym app · ${a.list.length} activities since ${since}`) + (a.error ? ' · ' + esc(a.error) : '') : a?.linked === false ? L('Не подключён. Вставь ключ Personal API в «Зале» → Настройки → Garmin — он общий для обоих приложений.', 'Not linked. Paste your Personal API key in the gym app → Settings → Garmin; it’s shared.') : L('Проверяю…', 'Checking…')}</p>`;
+    if (a?.linked) h += `<div class="stack" style="margin-bottom:24px"><button class="btn quiet" data-a="history" ${histBusy.on ? 'disabled' : ''}>${histBusy.on ? L('Загружаю…', 'Loading…') : L('Загрузить историю за год', 'Load a year of history')}</button></div>`;
   }
   // template
   h += `<div class="section-title">${L('Обычная неделя', 'Usual week')}</div><p class="hint" style="padding-bottom:4px">${L('Из этого собирается каждая новая неделя. День — желаемый: если он занят, сессия переедет и скажет почему. Якорь не двигается.', 'Every new week starts from this. The day is a preference: if it’s busy, the session moves and says why. An anchor stays put.')}</p><div>`;
@@ -962,7 +1000,7 @@ document.addEventListener('click', ev => {
   const a = el.dataset.a, wk = view.wk;
   if (a === 'close-sheet') return closeSheet();
   if (a === 'chip') { const inp = $('#cmdInput'); inp.value = el.dataset.t; inp.focus(); return; }
-  if (a === 'wk') { view.wk = ymd(addDays(parseYmd(wk), +el.dataset.d)); lastChange = null; render(); if (cloud.user && cloud.cals?.length) loadBusy(view.wk); return; }
+  if (a === 'wk') { view.wk = ymd(addDays(parseYmd(wk), +el.dataset.d)); lastChange = null; render(); if (cloud.user && cloud.cals?.length && todayIdx(view.wk) <= 6) loadBusy(view.wk); ensureHistory(view.wk); return; }
   if (a === 'wk-today') { view.wk = ymd(mondayOf(new Date())); render(); return; }
   if (a === 'settings') { view.v = 'settings'; render(); scrollTo(0, 0); if (cloud.user) fn('cal-status').then(d => { if (!d.error) { cloud.cals = d.calendars; cloud.google = d.google; if (view.v === 'settings') render(); } }); return; }
   if (a === 'back') { view.v = 'week'; render(); return; }
@@ -1013,6 +1051,13 @@ document.addEventListener('click', ev => {
   }
   if (a === 'lang') { lang = el.dataset.l; try { localStorage.setItem('train.lang', lang); } catch {} render(); return; }
   if (a === 'sign-out') { cloud.client.auth.signOut(); cloud.user = null; cloud.cals = null; render(); return; }
+  if (a === 'history') {
+    const from = ymd(addDays(new Date(), -365)), to = state.local.acts?.from || todayStr();
+    if (to <= from) { toast(L('Год истории уже загружен', 'A year of history is already here')); return; }
+    const p = loadHistory(from, to); render();
+    p.then(n => { toast(n == null ? L('Garmin не ответил — попробуй позже', 'Garmin didn’t answer — try later') : L(`Загружено тренировок: ${n}`, `Workouts loaded: ${n}`)); render(); });
+    return;
+  }
   if (a === 'google') {
     cloud.calBusy = true; render();
     fn('google-start', {return_to: location.origin + location.pathname}).then(d => {
