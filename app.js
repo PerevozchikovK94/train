@@ -970,6 +970,119 @@ function actStore(id, d) {
     localStorage.setItem('train.act.keys', JSON.stringify(keys));
   } catch {}
 }
+/* ---------- analytics for one workout: computed from Garmin's summary, series and the cached history ---------- */
+const sportOfSummary = S => S.type === 'hiking' ? 'hike' : S.sport;
+// Highest average power over any window of `sec` seconds (samples are uneven: integrate, don't count).
+function bestPower(S, sec) {
+  const t = S.t, p = S.pw; if (!t || !p || t[t.length - 1] - t[0] < sec) return null;
+  const E = [0];
+  for (let i = 1; i < t.length; i++) E.push(E[i - 1] + ((p[i - 1] ?? 0) + (p[i] ?? 0)) / 2 * (t[i] - t[i - 1]));
+  let best = null;
+  for (let i = 0, j = 0; i < t.length; i++) {
+    while (j < t.length && t[j] - t[i] < sec) j++;
+    if (j >= t.length) break;
+    const avg = (E[j] - E[i]) / (t[j] - t[i]);
+    if (best == null || avg > best) best = avg;
+  }
+  return best;
+}
+// Fastest time over `m` metres, interpolated between samples.
+function fastest(S, m) {
+  const t = S.t, d = S.dist; if (!t || !d) return null;
+  let best = null;
+  for (let i = 0, j = 0; i < d.length; i++) {
+    if (d[i] == null) continue;
+    if (j < i) j = i;
+    while (j < d.length && (d[j] == null || d[j] - d[i] < m)) j++;
+    if (j >= d.length) break;
+    const sec = (t[j] - t[i]) * m / (d[j] - d[i]);
+    if (best == null || sec < best) best = sec;
+  }
+  return best;
+}
+// Aerobic decoupling: output per heartbeat, first half vs second half of the moving part.
+function decoupling(S, sport) {
+  const out = sport === 'bike' ? S.pw : S.spd; if (!out || !S.hr) return null;
+  const idx = S.t.map((_, i) => i).filter(i => S.hr[i] > 60 && out[i] != null && out[i] > (sport === 'bike' ? 0 : 0.5));
+  if (idx.length < 20) return null;
+  const t0 = S.t[idx[0]], t1 = S.t[idx[idx.length - 1]];
+  if (t1 - t0 < 40 * 60) return null;
+  const mid = (t0 + t1) / 2, half = k => { const xs = idx.filter(i => k ? S.t[i] >= mid : S.t[i] < mid); return xs.reduce((a, i) => a + out[i], 0) / xs.reduce((a, i) => a + S.hr[i], 0); };
+  const r1 = half(0), r2 = half(1);
+  return (r1 - r2) / r1 * 100;
+}
+// Efficiency factor: power (bike) or metres per minute (run, hike) per heartbeat.
+const efOf = (sport, x) => sport === 'bike' ? (x.np && x.hr ? x.np / x.hr : null) : (x.hr && x.mpm ? x.mpm / x.hr : null);
+const EASY = new Set(['run_easy', 'run_long', 'bike_easy', 'bike_long', 'hike', 'mobility']);
+function analyse(d, base, sid) {
+  const S = d.summary, sp = sportOfSummary(S), ser = d.series, verdicts = [], best = [];
+  const sess = sid ? state.weeks[view.wk]?.sessions.find(x => x.id === sid) : null;
+  // 1. intensity, against what was planned when there was a plan
+  const z = base?.hrz, zt = z ? z.reduce((a, b) => a + b, 0) : 0;
+  if (zt > 600) {
+    const easy = (z[0] + z[1]) / zt * 100, hard = (z[3] + z[4]) / 60, mid = z[2] / zt * 100;
+    if (sess && EASY.has(sess.kind)) verdicts.push(easy >= 70
+      ? {head: L('Лёгкая, как задумано.', 'Easy, as planned.'), text: L(`${Math.round(easy)}% времени в Z1–Z2.`, `${Math.round(easy)}% of the time in Z1–Z2.`), tone: 'good'}
+      : {head: L('Тяжелее задуманного.', 'Harder than planned.'), text: L(`В Z1–Z2 только ${Math.round(easy)}%, в Z3 ${Math.round(mid)}% — лёгкий день ушёл в «серую зону».`, `Only ${Math.round(easy)}% in Z1–Z2, ${Math.round(mid)}% in Z3 — the easy day drifted into the grey zone.`), tone: 'warn'});
+    else if (sess?.kind === 'bike_q') verdicts.push(hard + z[2] / 60 >= 20
+      ? {head: L('Качество получилось.', 'Quality landed.'), text: L(`${Math.round(z[2] / 60 + hard)} мин в Z3–Z5.`, `${Math.round(z[2] / 60 + hard)} min in Z3–Z5.`), tone: 'good'}
+      : {head: L('Качества было мало.', 'Little quality.'), text: L(`Всего ${Math.round(z[2] / 60 + hard)} мин в Z3–Z5.`, `Only ${Math.round(z[2] / 60 + hard)} min in Z3–Z5.`), tone: 'warn'});
+    else verdicts.push({head: easy >= 70 ? L('В основном легко.', 'Mostly easy.') : hard >= 20 ? L('Тяжёлая тренировка.', 'A hard session.') : L('Смешанная интенсивность.', 'Mixed intensity.'), text: L(`Z1–Z2 ${Math.round(easy)}% · Z3 ${Math.round(mid)}% · Z4–Z5 ${Math.round(hard)} мин.`, `Z1–Z2 ${Math.round(easy)}% · Z3 ${Math.round(mid)}% · Z4–Z5 ${Math.round(hard)} min.`)});
+  }
+  // 2. planned vs done
+  if (sess && sess.status === 'done' && S.dur) {
+    const planned = sess.short || sess.min, diff = Math.round(S.dur / 60 - planned);
+    if (Math.abs(diff) >= 10) verdicts.push({head: diff > 0 ? L(`На ${diff} мин дольше плана.`, `${diff} min longer than planned.`) : L(`На ${-diff} мин короче плана.`, `${-diff} min shorter than planned.`), text: L(`План ${fDur(planned)}, сделано ${fDur(Math.round(S.dur / 60))}.`, `Planned ${fDur(planned)}, done ${fDur(Math.round(S.dur / 60))}.`)});
+  }
+  // 3. decoupling
+  const dec = ser && (sp === 'bike' || sp === 'run' || sp === 'hike') ? decoupling(ser, sp) : null;
+  if (dec != null) verdicts.push(dec < 5
+    ? {head: L(`Дрейф пульса ${fNum(dec, 1)}%.`, `HR drift ${fNum(dec, 1)}%.`), text: L('Меньше 5% — аэробная база держит всю тренировку.', 'Under 5% — the aerobic base held for the whole session.'), tone: 'good'}
+    : {head: L(`Дрейф пульса ${fNum(dec, 1)}%.`, `HR drift ${fNum(dec, 1)}%.`), text: L(`Во второй половине на тот же удар пульса ${sp === 'bike' ? 'мощность' : 'скорость'} ниже — усталость, жара или мало воды.`, `Second half gave less ${sp === 'bike' ? 'power' : 'speed'} per beat — fatigue, heat or too little water.`), tone: dec >= 10 ? 'warn' : ''});
+  // 4. efficiency and load against recent workouts of the same sport
+  const mine = {np: S.np, hr: S.hr, mpm: S.spd ? S.spd * 60 : null};
+  const ef = efOf(sp, mine);
+  const start = S.start || base?.start || '';
+  const hist = (state.local.acts?.list || []).filter(a => a.sport === sp && a.id !== S.id && a.start < start && a.start >= ymd(addDays(parseYmd(start.slice(0, 10)), -90)))
+    .map(a => ({...a, ef: efOf(sp, {np: a.np, hr: a.hr, mpm: a.km && a.min ? a.km * 1000 / a.min : null})}));
+  const avg = k => { const xs = hist.map(a => a[k]).filter(v => v != null && v > 0); return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null; };
+  const efAvg = avg('ef');
+  if (ef && efAvg && hist.filter(a => a.ef).length >= 3) {
+    const pctD = (ef / efAvg - 1) * 100;
+    verdicts.push({head: L(`Эффективность ${pctD >= 0 ? 'выше' : 'ниже'} обычной на ${fNum(Math.abs(pctD), 0)}%.`, `Efficiency ${fNum(Math.abs(pctD), 0)}% ${pctD >= 0 ? 'above' : 'below'} usual.`),
+      text: sp === 'bike' ? L(`NP на удар пульса: ${fNum(ef, 2)} против ${fNum(efAvg, 2)} за 90 дней.`, `NP per beat: ${fNum(ef, 2)} vs ${fNum(efAvg, 2)} over 90 days.`) : L(`Метров в минуту на удар пульса: ${fNum(ef, 2)} против ${fNum(efAvg, 2)} за 90 дней.`, `Metres per minute per beat: ${fNum(ef, 2)} vs ${fNum(efAvg, 2)} over 90 days.`), tone: pctD >= 3 ? 'good' : ''});
+  }
+  const loadAvg = avg('load');
+  if (base?.load && loadAvg && hist.length >= 3) {
+    const k = base.load / loadAvg;
+    if (k >= 1.3 || k <= 0.7) verdicts.push({head: k >= 1.3 ? L(`Нагрузка в ${fNum(k, 1)} раза выше обычной.`, `Load ${fNum(k, 1)}× your usual.`) : L('Нагрузка ниже обычной.', 'Lighter than usual.'), text: L(`Training load ${base.load} против ${Math.round(loadAvg)} в среднем.`, `Training load ${base.load} vs ${Math.round(loadAvg)} on average.`) + (k >= 1.5 ? L(' Завтра лучше легко.', ' Keep tomorrow easy.') : '')});
+  }
+  // best efforts
+  // 20 min is Garmin's own figure (whole recording); 5 and 60 min are estimated from the ~400 chart samples.
+  if (ser && sp === 'bike' && ser.pw) for (const [label, sec] of [['5 мин', 300], ['20 мин', 1200], ['60 мин', 3600]]) { const v = sec === 1200 && S.pw20 ? S.pw20 : bestPower(ser, sec); if (v) best.push([L(label, label.replace('мин', 'min')) + (sec === 1200 && S.pw20 ? '' : ' ≈'), fNum(v) + L(' Вт', ' W')]); }
+  if (ser && (sp === 'run' || sp === 'hike') && ser.dist) for (const [label, m] of [['1 км', 1000], ['5 км', 5000], ['10 км', 10000]]) { const v = fastest(ser, m); if (v) best.push([L(label, label.replace('км', 'km')), sp === 'run' ? `${hms(v)} · ${fPace(v / (m / 1000))}${L('/км', '/km')}` : hms(v)]); }
+  // this workout against the recent ones of its sport, plus the EF trend
+  let cmp = '';
+  if (hist.length >= 2) {
+    const rows = [];
+    const row = (label, cur, mean, fmt, unitDiff) => { if (cur == null || mean == null) return; const dlt = cur - mean; rows.push(`<tr><td>${esc(label)}</td><td class="num">${esc(fmt(cur))}</td><td class="num muted">${esc(fmt(mean))}</td><td class="num">${dlt >= 0 ? '+' : '−'}${esc(unitDiff(Math.abs(dlt)))}</td></tr>`); };
+    row(L('Длительность', 'Duration'), S.dur ? S.dur / 60 : null, avg('min'), v => fDur(Math.round(v)), v => fDur(Math.round(v)));
+    if (S.dist) row(L('Дистанция', 'Distance'), S.dist / 1000, avg('km'), v => fNum(v, 1) + L(' км', ' km'), v => fNum(v, 1));
+    row(L('Пульс ср.', 'Avg HR'), S.hr, avg('hr'), v => fNum(v), v => fNum(v));
+    if (sp === 'bike') row('NP', S.np, avg('np'), v => fNum(v) + L(' Вт', ' W'), v => fNum(v));
+    if (S.up || base?.elev) row(L('Набор', 'Climbing'), S.up ?? base.elev, avg('elev'), v => fNum(v) + L(' м', ' m'), v => fNum(v));
+    if (ef) row('EF', ef, efAvg, v => fNum(v, 2), v => fNum(v, 2));
+    const pts = [...hist.filter(a => a.ef).slice(-11).map(a => ({ef: a.ef, cur: false, start: a.start})), ...(ef ? [{ef, cur: true, start}] : [])];
+    let spark = '';
+    if (pts.length >= 4) {
+      const lo = Math.min(...pts.map(p => p.ef)), hi = Math.max(...pts.map(p => p.ef)), y = v => 34 - (v - lo) / ((hi - lo) || 1) * 28, x = i => 4 + i / (pts.length - 1) * 292;
+      spark = `<figure class="spark"><figcaption>${L(`EF по последним ${pts.length} тренировкам`, `EF over the last ${pts.length} workouts`)}</figcaption><svg viewBox="0 0 300 40" role="img" aria-label="${esc(pts.map(p => fNum(p.ef, 2)).join(', '))}"><polyline points="${pts.map((p, i) => `${x(i).toFixed(1)},${y(p.ef).toFixed(1)}`).join(' ')}" class="line"/>${pts.map((p, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(p.ef).toFixed(1)}" r="${p.cur ? 4.5 : 2.5}" class="${p.cur ? 'cur' : ''}"/>`).join('')}</svg></figure>`;
+    }
+    if (rows.length) cmp = `<div class="section-title">${L(`Против обычного · ${hist.length} трен. за 90 дней`, `Against usual · ${hist.length} workouts in 90 days`)}</div><table class="cmp"><thead><tr><th></th><th>${L('Эта', 'This')}</th><th>${L('Обычно', 'Usual')}</th><th>Δ</th></tr></thead><tbody>${rows.join('')}</tbody></table>${spark}`;
+  }
+  return {verdicts, best, cmp};
+}
+
 async function openActivity(id, plan, sid) {
   id = Number(id);
   const base = (state.local.acts?.list || []).find(a => a.id === id) || null;
@@ -1033,7 +1146,7 @@ function activityHTML(base, d, plan, sid, loading, error) {
   // stats, by sport; empty ones are left out
   const st = [];
   const add = (label, value) => { if (value && !/^—/.test(value)) st.push([label, value]); };
-  if (sp === 'bike') { add(L('Мощность NP / ср.', 'Power NP / avg'), S.np ? `${fNum(S.np)} / ${fNum(S.pw)} ${L('Вт', 'W')}` : null); add(L('Скорость ср.', 'Avg speed'), S.spd ? fNum(S.spd * 3.6, 1) + L(' км/ч', ' km/h') : null); add('TSS · IF', S.tss ? `${fNum(S.tss)} · ${fNum(S.if, 2)}` : null); add(L('Лучшие 20 мин', 'Best 20 min'), S.pw20 ? fNum(S.pw20) + L(' Вт', ' W') : null); }
+  if (sp === 'bike') { add(L('Мощность NP / ср.', 'Power NP / avg'), S.np ? `${fNum(S.np)} / ${fNum(S.pw)} ${L('Вт', 'W')}` : null); add(L('Скорость ср.', 'Avg speed'), S.spd ? fNum(S.spd * 3.6, 1) + L(' км/ч', ' km/h') : null); add('TSS · IF', S.tss ? `${fNum(S.tss)} · ${fNum(S.if, 2)}` : null); }
   if (sp === 'hike') { add(L('Набор / спуск', 'Up / down'), S.up ? `↑ ${fNum(S.up)} · ↓ ${fNum(S.down)}${L(' м', ' m')}` : null); add(L('Скорость в движении', 'Moving speed'), S.spd ? fNum(S.spd * 3.6, 1) + L(' км/ч', ' km/h') : null); }
   if (sp === 'run') add(L('Темп ср.', 'Avg pace'), S.spd ? fPace(paceOf(S.spd)) + L(' /км', ' /km') : null);
   add(L('Пульс ср. / макс.', 'HR avg / max'), S.hr ? `${fNum(S.hr)} / ${fNum(S.hrMax)}` : null);
@@ -1041,7 +1154,11 @@ function activityHTML(base, d, plan, sid, loading, error) {
   add('Training Effect', S.te ? `${fNum(S.te, 1)} ${L('аэроб.', 'aer.')} · ${fNum(S.teAn, 1)} ${L('анаэроб.', 'anaer.')}` : null);
   add(L('Калории', 'Calories'), S.kcal ? fNum(S.kcal) + L(' ккал', ' kcal') : null);
   add(L('Температура', 'Temperature'), S.temp != null ? fNum(S.temp) + '°' : null);
+  const an = d ? analyse(d, base, sid) : null;
+  if (an?.verdicts.length) h += `<ul class="verdicts">${an.verdicts.map(v => `<li class="${v.tone || ''}"><b>${esc(v.head)}</b> ${esc(v.text)}</li>`).join('')}</ul>`;
   if (st.length) h += `<dl class="act-stats">${st.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd class="num">${esc(v)}</dd></div>`).join('')}</dl>`;
+  if (an?.best.length) h += `<div class="section-title">${L('Лучшие отрезки', 'Best efforts')}</div>${an.best.some(b => b[0].endsWith('≈')) ? `<p class="hint" style="margin:-4px 0 8px">${L('≈ — оценка по точкам графика', '≈ — estimated from chart samples')}</p>` : ''}<dl class="act-stats best">${an.best.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd class="num">${esc(v)}</dd></div>`).join('')}</dl>`;
+  if (an?.cmp) h += an.cmp;
   // heart-rate zones: one hue, light to dark
   const z = base?.hrz, zt = z ? z.reduce((a, b) => a + b, 0) : 0;
   if (zt > 60) {

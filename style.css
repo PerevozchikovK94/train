@@ -278,3 +278,23 @@ a.btn{text-decoration:none}
 .wl-row.rest .wl-items{min-height:40px;padding:0}
 .wl-row.rest .wl-rest{line-height:40px}
 .nudge .dot{display:inline-block;vertical-align:1px;margin:0 4px 0 0}
+
+/* workout analytics */
+.verdicts{list-style:none;padding:4px 16px;margin:14px 0 0;border-radius:16px;background:var(--fill)}
+.verdicts li{position:relative;padding:12px 0 12px 14px;font-size:15px;line-height:1.4;color:var(--ink-2)}
+.verdicts li+li{border-top:1px solid var(--line)}
+.verdicts li b{color:var(--ink);font-weight:600}
+.verdicts li::before{content:"";position:absolute;left:0;top:19px;width:6px;height:6px;border-radius:50%;background:var(--muted)}
+.verdicts li.good::before{background:var(--sc,var(--accent))}
+.verdicts li.warn::before{background:var(--warn)}
+.act-stats.best{border-top:0;padding-top:0;margin-top:0}
+.cmp{width:100%;border-collapse:collapse;font-size:16px}
+.cmp th{font-size:13px;font-weight:500;color:var(--muted);text-align:right;padding:6px 0;border-bottom:1px solid var(--line)}
+.cmp td{padding:9px 0;border-bottom:1px solid var(--line);text-align:right}
+.cmp td:first-child,.cmp th:first-child{text-align:left;color:var(--ink-2)}
+.spark{margin:14px 0 0}
+.spark figcaption{font-size:13px;color:var(--muted);margin-bottom:4px}
+.spark svg{display:block;width:100%;height:auto;overflow:visible}
+.spark .line{fill:none;stroke:var(--line);stroke-width:2;vector-effect:non-scaling-stroke}
+.spark circle{fill:var(--muted)}
+.spark circle.cur{fill:var(--sc,var(--accent));stroke:var(--bg);stroke-width:2}
