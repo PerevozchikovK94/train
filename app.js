@@ -22,6 +22,7 @@ const KINDS = {
   run_easy:  {sport: 'run',   min: 45,  ru: 'Лёгкий бег', en: 'Easy run', dRu: 'Z2, можно разговаривать', dEn: 'Z2, conversational', impact: true},
   run_long:  {sport: 'run',   min: 65,  ru: 'Длинный лёгкий бег', en: 'Long easy run', dRu: 'Z2 ровно, без ускорений', dEn: 'Steady Z2, no surges', impact: true},
   bike_q:    {sport: 'bike',  min: 80,  ru: 'Вел — качество', en: 'Bike — quality', dRu: 'Sweet spot 3×12 мин, остальное Z2', dEn: 'Sweet spot 3×12 min, rest Z2', hard: true},
+  hike:      {sport: 'hike',  min: 180, weekend: true, ru: 'Поход', en: 'Hike', dRu: 'Спокойно, с набором; палки на спусках', dEn: 'Easy, with climbing; poles on descents'},
   bike_long: {sport: 'bike',  min: 210, weekend: true, ru: 'Длинный вел', en: 'Long ride', dRu: 'Z2 с набором; вставать каждые 15–20 мин', dEn: 'Z2 with climbing; stand up every 15–20 min', hard: true},
   bike_easy: {sport: 'bike',  min: 45,  ru: 'Лёгкая крутка', en: 'Easy spin', dRu: 'Z1–Z2, просто покрутить', dEn: 'Z1–Z2, just spin'},
   mobility:  {sport: 'walk',  min: 30,  ru: 'Прогулка и мобильность', en: 'Walk & mobility', dRu: 'Пешком или растяжка', dEn: 'Walk or stretch'},
@@ -32,8 +33,10 @@ const kDetail = k => L(KINDS[k].dRu, KINDS[k].dEn);
 const QUIET = '\u2063';
 const whyText = w => String(w || '').replace(QUIET, '');
 const whyLoud = w => !!w && !String(w).startsWith(QUIET);
-const PRIORITY = ['bike_long', 'bike_q', 'run_long', 'gym', 'climb', 'run_easy', 'bike_easy', 'mobility'];
-const SPORTS = {run: ['Бег', 'Running'], bike: ['Вел', 'Cycling'], gym: ['Зал', 'Gym'], climb: ['Скалодром', 'Climbing']};
+const PRIORITY = ['bike_long', 'hike', 'bike_q', 'run_long', 'gym', 'climb', 'run_easy', 'bike_easy', 'mobility'];
+const SPORTS = {run: ['Бег', 'Running'], bike: ['Вел', 'Cycling'], gym: ['Зал', 'Gym'], climb: ['Скалодром', 'Climbing'], hike: ['Походы', 'Hiking']};
+// Garmin calls a hike `hiking`; the server's list predates the hike sport, so it's read here.
+const actSport = a => a.type === 'hiking' ? 'hike' : a.sport;
 
 const DEFAULT_TEMPLATE = [
   {id: 't-gym', kind: 'gym', day: 0, tod: 'pm'},
@@ -75,6 +78,7 @@ function load() {
   if (!d || typeof d !== 'object') d = {};
   d.v = 1;
   d.prefs = {...DEFAULT_PREFS, ...(d.prefs || {})};
+  if (d.local?.acts?.list) d.local.acts.list = d.local.acts.list.map(a => ({...a, sport: actSport(a)}));
   d.template = Array.isArray(d.template) ? d.template : DEFAULT_TEMPLATE.map(x => ({...x}));
   d.weeks = d.weeks || {};
   d.checks = d.checks || {};
@@ -303,6 +307,8 @@ function effective(wk, s) {
     return g.bikeOk
       ? swap('bike_easy', Math.min(s.min, 60), L(`Бег вернётся после 48 ч на 0/10 (сейчас ${g.max}/10) — пока крутка`, `Running returns after 48 h at 0/10 (now ${g.max}/10) — easy spin instead`))
       : swap('mobility', 30, L(`Бег и вел подождут: сидя ${g.c.sit}/10`, `Running and riding wait: sitting ${g.c.sit}/10`));
+  if (sport === 'hike' && (g.stop || g.c.walk > 0 || g.c.rest))
+    return swap('mobility', 30, L(`При ходьбе ${g.c.walk}/10 — поход подождёт`, `Walking ${g.c.walk}/10 — the hike can wait`));
   if (sport === 'bike' && !g.bikeOk)
     return swap('mobility', 40, L(`Сидя ${g.c.sit}/10 — седло подождёт`, `Sitting ${g.c.sit}/10 — the saddle can wait`));
   if (g.max > 0 && sport === 'gym') return {...s, caution: L('Без глубоких приседов и выпадов под весом', 'No deep squats or lunges under load')};
@@ -335,7 +341,7 @@ function matchActs(wk, week) {
   return lines;
 }
 const extras = (wk, week) => weekActs(wk).filter(a => !week.sessions.some(s => s.act?.id === a.id));
-const trainingSport = sp => sp === 'run' || sp === 'bike' || sp === 'gym' || sp === 'climb' || sp === 'swim';
+const trainingSport = sp => sp === 'run' || sp === 'bike' || sp === 'gym' || sp === 'climb' || sp === 'hike' || sp === 'swim';
 
 /* ---------- change log ---------- */
 function snapshot(week) { return JSON.stringify({sessions: week.sessions, away: week.away, sick: week.sick}); }
@@ -390,6 +396,7 @@ function parse(text, wk) {
   if (has(words, ['зал', 'gym', 'силов', 'strength'])) sport = 'gym';
   if (has(words, ['скал', 'лазан', 'climb', 'boulder', 'стен'])) sport = 'climb';
   if (has(words, ['прогул', 'мобил', 'растяж', 'walk', 'stretch'])) sport = 'walk';
+  if (has(words, ['поход', 'хайк', 'hike', 'hiking', 'горы', 'горах', 'трек'])) sport = 'hike';
   const long = has(words, ['длин', 'long']);
   if (has(words, ['качеств', 'интервал', 'quality', 'interval', 'sweet', 'темпов'])) { sport = 'bike'; kind = 'bike_q'; }
   let minutes = null;
@@ -516,7 +523,7 @@ function run(text) {
       } else {
         const g = gate(), date = ymd(addDays(parseYmd(wk), day));
         const others = week.sessions.filter(o => active(o) && o.day !== day);
-        let kind = q.sport === 'gym' ? 'gym' : q.sport === 'climb' ? 'climb' : q.sport === 'run' ? 'run_easy' : q.sport === 'bike' ? 'bike_easy' : null;
+        let kind = q.sport === 'gym' ? 'gym' : q.sport === 'climb' ? 'climb' : q.sport === 'hike' ? 'hike' : q.sport === 'run' ? 'run_easy' : q.sport === 'bike' ? 'bike_easy' : null;
         if (!kind) kind = (!g.known || g.runOkOn(date)) && !conflict('run_easy', day, others) ? 'run_easy' : (!g.known || g.bikeOk) ? 'bike_easy' : 'mobility';
         const n = {...newSession({id: 'added', kind, min: N, day, tod: q.tod || (day >= 5 ? 'am' : 'pm'), anchor: false, note: ''}), day, locked: true};
         n.start = q.at ?? pickSlot(windows(wk, day, week), N, n.tod) ?? toMin(state.prefs.evening);
@@ -561,10 +568,11 @@ function run(text) {
       return commit(wk, week, before, text, lines);
     }
     case 'add': {
-      const kind = q.kind || (q.sport === 'run' ? (q.long ? 'run_long' : 'run_easy') : q.sport === 'bike' ? (q.long ? 'bike_long' : 'bike_easy') : q.sport === 'gym' ? 'gym' : q.sport === 'climb' ? 'climb' : q.sport === 'walk' ? 'mobility' : null);
+      const kind = q.kind || (q.sport === 'run' ? (q.long ? 'run_long' : 'run_easy') : q.sport === 'bike' ? (q.long ? 'bike_long' : 'bike_easy') : q.sport === 'gym' ? 'gym' : q.sport === 'climb' ? 'climb' : q.sport === 'hike' ? 'hike' : q.sport === 'walk' ? 'mobility' : null);
       if (!kind) return reply(text, [L('Что добавить? Например: «добавь бег в пятницу»', 'Add what? e.g. “add a run on Friday”')]);
       const day = q.days.length ? q.days[q.days.length - 1].d : null;
-      const n = newSession({id: 'added', kind, min: q.minutes || KINDS[kind].min, day: day ?? Math.max(ti, 0), tod: q.tod || 'pm', anchor: false, note: ''});
+      // Long days (a hike, a long ride or run) start in the morning unless told otherwise.
+      const n = newSession({id: 'added', kind, min: q.minutes || KINDS[kind].min, day: day ?? Math.max(ti, 0), tod: q.tod || (KINDS[kind].weekend || kind.endsWith('long') ? 'am' : 'pm'), anchor: false, note: ''});
       week.sessions.push(n);
       if (day != null && day >= ti && day <= 6) { n.day = day; n.locked = true; n.start = q.at ?? pickSlot(windows(wk, day, week), n.min, n.tod) ?? toMin(state.prefs.evening); n.why = L('Ты добавил', 'You added it'); }
       place(wk, week);
@@ -658,7 +666,7 @@ function onBusy(wk) {
 // recent weeks refresh every 15 min, older ones are fetched once (history doesn't change).
 function mergeActs(list, from, d) {
   const a = state.local.acts || {list: []}, byId = new Map((a.list || []).map(x => [x.id, x]));
-  for (const x of list) byId.set(x.id, x);
+  for (const x of list) byId.set(x.id, {...x, sport: actSport(x)});
   state.local.acts = {...a, list: [...byId.values()].sort((x, y) => x.start.localeCompare(y.start)), linked: d.linked, error: d.error,
     from: a.from && a.from < from ? a.from : from};
   saveLocal();
@@ -985,7 +993,7 @@ function smooth(arr, w) {
 }
 // The series each sport is read by; one chart per measure, one shared time axis.
 function chartDefs(d) {
-  const S = d.series, sp = d.summary.sport, out = [];
+  const S = d.series, sp = d.summary.type === 'hiking' ? 'hike' : d.summary.sport, out = [];
   if (!S) return out;
   const has = a => a && a.some(v => v != null && v > 0);
   const sum = d.summary;
@@ -1012,7 +1020,7 @@ function runSplits(S) {
   return out;
 }
 function activityHTML(base, d, plan, sid, loading, error) {
-  const S = d?.summary || {}, sp = S.sport || base?.sport || 'other';
+  const S = d?.summary || {}, sp = S.type === 'hiking' ? 'hike' : S.sport || base?.sport || 'other';
   const name = S.name || base?.name || L('Тренировка', 'Workout');
   const start = S.start || base?.start || '';
   const when = start ? new Date(start.replace(' ', 'T')).toLocaleString(lang === 'ru' ? 'ru-RU' : 'en-GB', {weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'}) : '';
@@ -1026,6 +1034,7 @@ function activityHTML(base, d, plan, sid, loading, error) {
   const st = [];
   const add = (label, value) => { if (value && !/^—/.test(value)) st.push([label, value]); };
   if (sp === 'bike') { add(L('Мощность NP / ср.', 'Power NP / avg'), S.np ? `${fNum(S.np)} / ${fNum(S.pw)} ${L('Вт', 'W')}` : null); add(L('Скорость ср.', 'Avg speed'), S.spd ? fNum(S.spd * 3.6, 1) + L(' км/ч', ' km/h') : null); add('TSS · IF', S.tss ? `${fNum(S.tss)} · ${fNum(S.if, 2)}` : null); add(L('Лучшие 20 мин', 'Best 20 min'), S.pw20 ? fNum(S.pw20) + L(' Вт', ' W') : null); }
+  if (sp === 'hike') { add(L('Набор / спуск', 'Up / down'), S.up ? `↑ ${fNum(S.up)} · ↓ ${fNum(S.down)}${L(' м', ' m')}` : null); add(L('Скорость в движении', 'Moving speed'), S.spd ? fNum(S.spd * 3.6, 1) + L(' км/ч', ' km/h') : null); }
   if (sp === 'run') add(L('Темп ср.', 'Avg pace'), S.spd ? fPace(paceOf(S.spd)) + L(' /км', ' /km') : null);
   add(L('Пульс ср. / макс.', 'HR avg / max'), S.hr ? `${fNum(S.hr)} / ${fNum(S.hrMax)}` : null);
   add(L('Каденс', 'Cadence'), S.cad ? fNum(S.cad) + (sp === 'run' ? L(' шаг/мин', ' spm') : L(' об/мин', ' rpm')) : null);

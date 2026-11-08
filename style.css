@@ -88,8 +88,8 @@ a.btn{text-decoration:none}
 
 /* ---------- training week ---------- */
 /* Sport colours: one categorical set, checked with the dataviz validator for every pair (sports sit side by side), light and dark. */
-:root{--bike:#2a78d6;--run:#eb6834;--climb:#1baf7a;--gym:#851980;--walk:#8C8C86;--busy:#DADAD3;--cmd:76px}
-@media (prefers-color-scheme:dark){:root{--bike:#3987e5;--run:#d95926;--climb:#199e70;--gym:#a5559f;--walk:#8E8E88;--busy:#3D3D39}}
+:root{--bike:#2a78d6;--run:#eb6834;--climb:#1baf7a;--gym:#851980;--hike:#7e4a09;--walk:#8C8C86;--busy:#DADAD3;--cmd:76px}
+@media (prefers-color-scheme:dark){:root{--bike:#3987e5;--run:#d95926;--climb:#199e70;--gym:#a5559f;--hike:#845012;--walk:#8E8E88;--busy:#3D3D39}}
 .screen{padding-bottom:calc(var(--cmd) + 32px + env(safe-area-inset-bottom,0px))}
 .weeknav{display:flex;align-items:center;gap:2px;margin-left:-6px}
 .icon-btn{padding:6px;min-height:36px;min-width:36px;justify-content:center}
@@ -131,12 +131,12 @@ a.btn{text-decoration:none}
 .tl .b{background:var(--busy)}
 .tl .w{background:color-mix(in srgb,var(--busy) 45%,var(--fill))}
 .tl .s{background:var(--c,var(--accent))}
-.tl .bike{--c:var(--bike)}.tl .run{--c:var(--run)}.tl .gym{--c:var(--gym)}.tl .climb{--c:var(--climb)}.tl .walk{--c:var(--walk)}
+.tl .hike{--c:var(--hike)}.tl .bike{--c:var(--bike)}.tl .run{--c:var(--run)}.tl .gym{--c:var(--gym)}.tl .climb{--c:var(--climb)}.tl .walk{--c:var(--walk)}
 .tl .x{background:transparent;box-shadow:inset 0 0 0 2px var(--c,var(--accent))}
 .tl .now{width:2px;border-radius:1px;background:var(--danger)}
 .sess{display:flex;gap:12px;align-items:flex-start;width:100%;min-height:52px;text-align:left;padding:12px 0 8px}
 .dot{flex:none;width:10px;height:10px;border-radius:50%;margin-top:8px;background:var(--walk)}
-.dot.bike{background:var(--bike)}.dot.run{background:var(--run)}.dot.gym{background:var(--gym)}.dot.climb{background:var(--climb)}
+.dot.hike{background:var(--hike)}.dot.bike{background:var(--bike)}.dot.run{background:var(--run)}.dot.gym{background:var(--gym)}.dot.climb{background:var(--climb)}
 .sess .t{flex:1;min-width:0}
 .sess .t b{font-weight:500}
 .sess .t .meta{font-size:16px;color:var(--ink-2);font-variant-numeric:tabular-nums}
@@ -145,7 +145,7 @@ a.btn{text-decoration:none}
 .sess.done .t b::after{content:" ✓";color:var(--accent)}
 .sess.skipped .t b,.sess.dropped .t b{color:var(--muted);text-decoration:line-through}
 .sess.extra .dot{background:transparent;box-shadow:inset 0 0 0 2px var(--c,var(--walk))}
-.sess.extra .dot.bike{--c:var(--bike)}.sess.extra .dot.run{--c:var(--run)}.sess.extra .dot.gym{--c:var(--gym)}.sess.extra .dot.climb{--c:var(--climb)}
+.sess.extra .dot.hike{--c:var(--hike)}.sess.extra .dot.bike{--c:var(--bike)}.sess.extra .dot.run{--c:var(--run)}.sess.extra .dot.gym{--c:var(--gym)}.sess.extra .dot.climb{--c:var(--climb)}
 .free{font-size:15px;color:var(--muted);padding:6px 0 0}
 .pend{display:flex;gap:8px;margin:2px 0 4px 22px}
 
@@ -201,7 +201,7 @@ a.btn{text-decoration:none}
 .chart figcaption .muted{font-weight:400;font-size:13px}
 .plot{position:relative;height:110px}
 .plot svg{display:block;width:100%;height:100%;overflow:visible}
-.act{--sc:var(--accent)}.act[data-sport=bike]{--sc:var(--bike)}.act[data-sport=run]{--sc:var(--run)}.act[data-sport=gym]{--sc:var(--gym)}.act[data-sport=climb]{--sc:var(--climb)}
+.act{--sc:var(--accent)}.act[data-sport=hike]{--sc:var(--hike)}.act[data-sport=bike]{--sc:var(--bike)}.act[data-sport=run]{--sc:var(--run)}.act[data-sport=gym]{--sc:var(--gym)}.act[data-sport=climb]{--sc:var(--climb)}
 .plot .line{fill:none;stroke:var(--sc);stroke-width:2;vector-effect:non-scaling-stroke;stroke-linejoin:round;stroke-linecap:round}
 .plot .area{fill:color-mix(in srgb,var(--ink) 10%,transparent);stroke:none}
 .chart[data-key="el"] .line{stroke:var(--muted)}
@@ -220,7 +220,7 @@ a.btn{text-decoration:none}
 .splits th:not(:first-child),.splits td:not(:first-child){text-align:right}
 
 /* ---------- week, v2: one hero, one progress line, one row per day ---------- */
-.bike{--sc:var(--bike)}.run{--sc:var(--run)}.gym{--sc:var(--gym)}.climb{--sc:var(--climb)}.walk{--sc:var(--walk)}
+.hike{--sc:var(--hike)}.bike{--sc:var(--bike)}.run{--sc:var(--run)}.gym{--sc:var(--gym)}.climb{--sc:var(--climb)}.walk{--sc:var(--walk)}
 .hero{position:relative;background:color-mix(in srgb,var(--sc) 9%,var(--bg));border-radius:22px;padding:18px 18px 16px;margin:4px 0 14px;overflow:hidden}
 .hero::before{content:"";position:absolute;left:0;top:18px;bottom:18px;width:4px;border-radius:0 3px 3px 0;background:var(--sc)}
 .hero-eyebrow{font-size:15px;font-weight:600;color:color-mix(in srgb,var(--sc) 75%,var(--ink))}
