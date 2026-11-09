@@ -12,6 +12,9 @@ const DAYS = () => L(['пн', 'вт', 'ср', 'чт', 'пт', 'сб', 'вс'], [
 const ICON = {
   left: '<path d="m15 18-6-6 6-6"/>', right: '<path d="m9 18 6-6-6-6"/>', up: '<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>',
   chat: '<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20.5l1.4-5A8 8 0 1 1 21 12Z"/>',
+  calendar: '<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/>', check: '<path d="M20 6 9 17l-5-5"/>',
+  spark: '<path d="M12 3l1.9 5.6L19.5 10l-5.6 1.9L12 17.5l-1.9-5.6L4.5 10l5.6-1.4Z"/>',
+  gear: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
 };
 const icon = (n, size = 20) => `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[n]}</svg>`;
 const MONTHS_RU = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
@@ -95,6 +98,13 @@ function load() {
   for (const p of Object.values(d.proposals)) if (p.status === 'pending' && Date.now() - Date.parse(p.at) > 600e3) p.status = 'error';
   for (const m of d.chat) if (m.pending) { m.pending = false; if (!m.text && !m.actions) m.error = 'failed'; }
   d.local = d.local || {busy: {}, acts: null};
+  return fill(d);
+}
+// Fields that came after launch. The first account had injury tracking built in (pain checks and its run rule),
+// so an existing document with pain checks keeps it; an existing plan means onboarding is behind it.
+function fill(d) {
+  if (!d.health) d.health = Object.keys(d.checks || {}).length ? {track: true, note: '', rule: 'бег только после 48 ч на 0/10, включая сидение; вел — если сидя 0/10'} : {track: false};
+  if (!d.onboard && (Object.keys(d.weeks || {}).length || d.plan)) d.onboard = {done: true, at: null};
   return d;
 }
 const synced = () => { const {local, dirty, syncedAt, syncedUser, ...rest} = state; return rest; };
@@ -641,7 +651,7 @@ async function sync() {
       state = {...row.data, local, syncedAt: row.updated_at, syncedUser: uid, dirty: false};
       state.prefs = {...DEFAULT_PREFS, ...(state.prefs || {})};
       state.weeks = state.weeks || {}; state.checks = state.checks || {}; state.asks = state.asks || {}; state.chat = Array.isArray(state.chat) ? state.chat : []; state.plan = state.plan || null; state.proposals = state.proposals || {}; state.template = state.template || DEFAULT_TEMPLATE.map(x => ({...x}));
-      saveLocal(); render();
+      fill(state); saveLocal(); render();
     } else if (state.dirty || !row) {
       const sent = rev;
       const {data: up, error: e2} = await sb.from('training_state').upsert({user_id: uid, data: synced()}, {onConflict: 'user_id'}).select('updated_at').single();
@@ -740,15 +750,23 @@ async function initCloud() {
   render();
   if (cloud.user) afterSignIn();
 }
-async function afterSignIn() {
-  await sync();
-  const st = await fn('cal-status'); if (!st.error) { cloud.cals = st.calendars; cloud.google = st.google; }
-  render();
-  const ai = aiStatus();
-  if (cloud.cals?.length) await loadBusy(view.wk);
-  await loadActs();
-  await ai;
-  maybeWeekly();
+// Once per signed-in user: sync, membership (cloud.ready), then calendar, Garmin and the assistant for members.
+function afterSignIn() {
+  const uid = cloud.user?.id;
+  if (cloud.signedFor === uid && cloud.signP) return cloud.signP;
+  cloud.signedFor = uid;
+  cloud.ready = Promise.all([sync(), fn('me').then(d => { cloud.me = d.error ? null : d; })]);
+  return cloud.signP = (async () => {
+    await cloud.ready;
+    if (cloud.me && !cloud.me.member) { cloud.ai = false; render(); return; }
+    const st = await fn('cal-status'); if (!st.error) { cloud.cals = st.calendars; cloud.google = st.google; }
+    render();
+    const ai = aiStatus();
+    if (cloud.cals?.length) await loadBusy(view.wk);
+    await loadActs();
+    await ai;
+    maybeWeekly();
+  })();
 }
 addEventListener('online', () => scheduleSync(200));
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && cloud.user) { scheduleSync(200); if (cloud.cals?.length) loadBusy(view.wk); loadActs().then(maybeWeekly); } });
@@ -787,9 +805,10 @@ function sessCtx(s, wk) {
 }
 const busyCtx = wk => state.local.busy[wk] ? [0, 1, 2, 3, 4, 5, 6].map(i => ({day: DAYS_RU[i], busy: blocks(wk, i).map(b => `${hm(b.s)}–${hm(b.e)}${b.work ? ' работа' : ''}`)})).filter(x => x.busy.length) : 'календарь не загружен';
 function painCtx() {
+  if (!state.health?.track && !Object.keys(state.checks).length) return 'боль не отслеживает, травм не указано';
   const g = gate(), now = new Date();
   const checks = Object.keys(state.checks).filter(d => d >= ymd(addDays(now, -14))).sort().map(d => ({date: d, sit: state.checks[d].sit, walk: state.checks[d].walk, rest_or_night_pain: !!state.checks[d].rest}));
-  return {checks, gate: g.known ? {max_today: g.max, stop: g.stop, see_doctor: g.doctor, bike_ok: g.bikeOk, run_ok_today: g.runOkOn(todayStr())} : 'нет свежей отметки', user_rule: 'бег только после 48 ч на 0/10, включая сидение; вел — если сидя 0/10'};
+  return {checks, gate: g.known ? {max_today: g.max, stop: g.stop, see_doctor: g.doctor, bike_ok: g.bikeOk, run_ok_today: g.runOkOn(todayStr())} : 'нет свежей отметки', injury: state.health?.note || null, user_rule: state.health?.rule || null};
 }
 function garminCtx() {
   const now = new Date(), acts = state.local.acts?.list || [], since = ymd(addDays(now, -21));
@@ -857,6 +876,8 @@ const chatErr = e => ({
   network: L('Нет сети', 'You’re offline'), unauthorized: L('Войди заново в настройках', 'Sign in again in Settings'),
   stopped: L('Остановлено', 'Stopped'),
   no_plan: L('Не получилось собрать план — попробуй ещё раз', 'Couldn’t put the plan together — try again'),
+  limit: L('Лимит ассистента на сегодня закончился — завтра снова можно', 'Today’s assistant allowance is used up — back tomorrow'),
+  not_member: L('Ассистент доступен по приглашению — введи инвайт-код', 'The assistant is invite-only — enter an invite code'),
 }[e] || L('Не получилось — попробуй ещё раз', 'That didn’t work — try again'));
 function msgHTML(m) {
   if (m.role === 'user') return `<div class="msg me"><div class="bubble">${esc(m.text)}</div></div>`;
@@ -1470,6 +1491,274 @@ function planSettingsHTML() {
   return h + `<div class="stack" style="margin-bottom:24px"><button class="btn ${p ? 'quiet' : 'primary'}" data-a="plan-open">${p ? L('Собрать план заново', 'Rebuild the plan') : L('Собрать план', 'Build a plan')}</button></div>`;
 }
 
+/* ---------- onboarding: account by invite → calendar → Garmin → time → health → the plan wizard ---------- */
+// Joining takes an invite code (the server checks it); an account from the gym app joins by redeeming one.
+// The step survives a reload (Google's consent screen leaves the page), so connecting Google resumes where it left.
+const ONB_STEPS = ['hello', 'account', 'calendar', 'garmin', 'time', 'health'];
+const ONB_KEY = 'train.onb';
+const onb = {step: 'hello', mode: 'join', busy: false, err: '', code: '', health: null};
+const inviteFromUrl = (() => { try { return (new URLSearchParams(location.search).get('invite') || '').trim().toUpperCase(); } catch { return ''; } })();
+const onbSaved = () => { try { return localStorage.getItem(ONB_KEY); } catch { return null; } };
+function openOnboarding(step) {
+  onb.step = step || (!cloud.user ? 'hello' : cloud.me && !cloud.me.member ? 'code' : 'calendar');
+  onb.err = ''; onb.busy = false; onb.code = onb.code || inviteFromUrl;
+  if (onb.code && onb.step === 'hello') onb.mode = 'join';
+  onb.health = state.health?.track ? 'yes' : null;
+  openSheet(onbHTML(), {onb: true});
+  try { localStorage.setItem(ONB_KEY, onb.step); } catch {}
+}
+function onbRender() {
+  if (!sheetCtx?.onb) return;
+  $('#sheetPanel').innerHTML = onbHTML();
+  try { localStorage.setItem(ONB_KEY, onb.step); } catch {}
+}
+function onbGo(step) { onb.step = step; onb.err = ''; onb.busy = false; onbRender(); $('#sheetPanel .sheet-scroll')?.scrollTo(0, 0); }
+function onbFinish(toWizard) {
+  state.onboard = {done: true, at: isoNow()}; persist();
+  try { localStorage.removeItem(ONB_KEY); } catch {}
+  closeSheet(); render();
+  if (toWizard && !state.plan) setTimeout(openWizard, 250);
+}
+const onbErr = e => ({
+  bad_email: L('Проверь почту', 'Check the email'), weak_password: L('Пароль — минимум 8 символов', 'Password: at least 8 characters'),
+  bad_code: L('Код не подошёл: неверный или уже использован', 'That code didn’t work: wrong or already used'),
+  email_taken: L('Аккаунт с этой почтой уже есть — войди, и код можно будет ввести после входа', 'There’s already an account with this email — sign in, then enter the code'),
+  wrong: L('Неверная почта или пароль', 'Wrong email or password'), bad_key: L('Это не похоже на ключ — скопируй его целиком', 'That doesn’t look like a key — copy all of it'),
+  key_rejected: L('Garmin не принял ключ: проверь, что он скопирован целиком и не истёк', 'Garmin rejected the key: check it’s complete and not expired'),
+  garmin_unavailable: L('Garmin сейчас не отвечает — попробуй позже', 'Garmin isn’t answering — try later'),
+}[e] || L('Не получилось — проверь сеть и попробуй ещё раз', 'Didn’t work — check the connection and try again'));
+
+function onbHTML() {
+  const st = onb.step, i = ONB_STEPS.indexOf(st === 'code' ? 'account' : st);
+  const head = `<div class="sheet-head"><span>${i > 1 && !onb.busy ? `<button class="nav-btn" data-a="onb-go" data-s="${ONB_STEPS[i - 1]}">${icon('left')}${L('Назад', 'Back')}</button>` : `<span class="wiz-title">${L('Неделя', 'Week')}</span>`}</span>${st === 'hello' || !cloud.user ? `<button class="nav-btn" data-a="onb-skip">${L('Закрыть', 'Close')}</button>` : `<button class="nav-btn" data-a="onb-later">${L('Позже', 'Later')}</button>`}</div>`;
+  const dots = i > 0 ? `<div class="wiz-dots" aria-hidden="true">${ONB_STEPS.slice(1).map((_, k) => `<i class="${k < i ? 'on' : ''}"></i>`).join('')}</div>` : '';
+  const err = onb.err ? `<p class="onb-err" role="alert">${esc(onbErr(onb.err))}</p>` : '';
+  const dis = onb.busy ? 'disabled' : '';
+  let b = '';
+  if (st === 'hello') {
+    b = `<h2 class="wiz-h">${L('Тренировки, которые помещаются в жизнь', 'Training that fits around your life')}</h2>
+      <ul class="onb-points">
+        <li>${icon('calendar')}<span><b>${L('Читает твой календарь', 'Reads your calendar')}</b>${L('и ставит тренировки в свободные окна. Сорвался день — переставит сама.', 'and puts sessions into free slots. A day falls apart — it reshuffles.')}</span></li>
+        <li>${icon('check')}<span><b>${L('Garmin отмечает сделанное', 'Garmin marks what’s done')}</b>${L('— ничего не нужно вписывать руками.', '— nothing to log by hand.')}</span></li>
+        <li>${icon('spark')}<span><b>${L('Ассистент собирает неделю', 'An assistant builds the week')}</b>${L('по твоей истории и своду исследований, а по выходным предлагает следующую.', 'from your history and a research rulebook, and proposes the next one every weekend.')}</span></li>
+      </ul>
+      <div class="stack wiz-go"><button class="btn primary" data-a="onb-mode" data-m="join">${onb.code ? L('Присоединиться по приглашению', 'Join with the invite') : L('У меня есть инвайт-код', 'I have an invite code')}</button>
+      <button class="btn quiet" data-a="onb-mode" data-m="in">${L('Уже есть аккаунт', 'I already have an account')}</button>
+      <button class="btn link" data-a="onb-skip">${L('Посмотреть без аккаунта', 'Look around without an account')}</button></div>`;
+  } else if (st === 'account') {
+    const join = onb.mode === 'join';
+    b = `<h2 class="wiz-h">${join ? L('Создай аккаунт', 'Create your account') : L('Вход', 'Sign in')}</h2>
+      <p class="hint">${join ? L('Аккаунт общий с «Залом». План и настройки синхронизируются между устройствами.', 'The account is shared with the gym app. Your plan and settings sync across devices.') : L('Тот же аккаунт, что в «Зале».', 'The same account as the gym app.')}</p>
+      <form id="onbAccount" class="stack" style="padding-top:8px">
+        <label class="field">${L('Почта', 'Email')}<input id="onbEmail" type="email" inputmode="email" autocomplete="username" autocapitalize="off" required></label>
+        <label class="field">${L('Пароль', 'Password')}<input id="onbPw" type="password" autocomplete="${join ? 'new-password' : 'current-password'}" minlength="8" required>${join ? `<span class="field-hint">${L('Минимум 8 символов', 'At least 8 characters')}</span>` : ''}</label>
+        ${join ? `<label class="field">${L('Инвайт-код', 'Invite code')}<input id="onbCode" autocomplete="off" autocapitalize="characters" spellcheck="false" value="${esc(onb.code)}" required></label>` : ''}
+        ${err}<button class="btn primary" type="submit" ${dis}>${onb.busy ? L('Секунду…', 'One moment…') : join ? L('Создать аккаунт', 'Create account') : L('Войти', 'Sign in')}</button></form>
+      <div class="stack" style="padding-top:8px"><button class="btn link" data-a="onb-mode" data-m="${join ? 'in' : 'join'}">${join ? L('Уже есть аккаунт — войти', 'Already have an account — sign in') : L('Нет аккаунта — создать по инвайту', 'No account — join with an invite')}</button></div>`;
+  } else if (st === 'code') {
+    b = `<h2 class="wiz-h">${L('Нужен инвайт-код', 'You need an invite code')}</h2>
+      <p class="hint">${L(`Ты вошёл как ${cloud.user?.email || ''}. «Неделя» пока открыта по приглашениям — введи код, и подключим календарь, Garmin и ассистента.`, `You’re signed in as ${cloud.user?.email || ''}. The app is invite-only for now — enter a code to connect your calendar, Garmin and the assistant.`)}</p>
+      <form id="onbRedeem" class="stack" style="padding-top:8px"><label class="field">${L('Инвайт-код', 'Invite code')}<input id="onbCode" autocomplete="off" autocapitalize="characters" spellcheck="false" value="${esc(onb.code)}" required></label>
+      ${err}<button class="btn primary" type="submit" ${dis}>${onb.busy ? L('Проверяю…', 'Checking…') : L('Продолжить', 'Continue')}</button></form>`;
+  } else if (st === 'calendar') {
+    const cals = cloud.cals || [];
+    b = `<h2 class="wiz-h">${L('Подключи календарь', 'Connect your calendar')}</h2>
+      <p class="hint">${L('Приложение смотрит только, когда ты занят, и ставит тренировки в окна между встречами. Календарь оно не меняет.', 'The app only looks at when you’re busy and fits sessions between events. It never changes your calendar.')}</p>
+      ${cals.length ? `<div class="list" style="margin:12px 0">${cals.map(c => `<div class="row"><span class="t"><b>${esc(c.label)}</b><span>${L('Подключён', 'Connected')}</span></span></div>`).join('')}</div>` : ''}
+      <div class="stack" style="padding-top:8px">${cloud.google ? `<button class="btn ${cals.length ? 'quiet' : 'primary'}" data-a="google" ${cloud.calBusy ? 'disabled' : ''}>${L('Подключить Google Календарь', 'Connect Google Calendar')}</button>
+        <p class="hint">${L('Google может показать «приложение не проверено» — оно в бете: «Дополнительно» → «Перейти».', 'Google may say the app isn’t verified — it’s in beta: Advanced → Go to app.')}</p>` : ''}</div>
+      <details class="onb-more" ${cloud.google ? '' : 'open'}><summary>${L('Apple, Outlook или рабочий — по ссылке iCal', 'Apple, Outlook or work — by iCal link')}</summary>
+        <p class="hint">${L('Apple: Календарь на Mac → правый клик по календарю → «Поделиться» → публичный, скопируй ссылку. Outlook: Настройки → Календарь → Общие календари → «Опубликовать» → ICS. Google: Настройки → календарь → «Секретный адрес в формате iCal».', 'Apple: Calendar on a Mac → right-click the calendar → Share → Public, copy the link. Outlook: Settings → Calendar → Shared calendars → Publish → ICS. Google: Settings → your calendar → Secret address in iCal format.')}</p>
+        <form id="onbCal" class="stack"><label class="field">${L('Ссылка iCal (.ics)', 'iCal link (.ics)')}<input id="onbCalUrl" type="url" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://…/basic.ics" required></label>
+        <button class="btn quiet" type="submit" ${cloud.calBusy ? 'disabled' : ''}>${cloud.calBusy ? L('Проверяю…', 'Checking…') : L('Подключить по ссылке', 'Connect by link')}</button></form></details>
+      <div class="stack wiz-go"><button class="btn ${cals.length ? 'primary' : 'quiet'}" data-a="onb-go" data-s="garmin">${cals.length ? L('Дальше', 'Next') : L('Без календаря — дальше', 'Skip the calendar')}</button></div>`;
+  } else if (st === 'garmin') {
+    const g = cloud.me?.garmin, a = state.local.acts;
+    b = `<h2 class="wiz-h">${L('Подключи Garmin', 'Connect Garmin')}</h2>`;
+    if (g?.linked) b += `<p class="hint">${L('Подключён.', 'Connected.')} ${a?.list ? L(`Тренировок за последние 4 недели: ${a.list.filter(x => trainingSport(x.sport)).length}.`, `Workouts in the last 4 weeks: ${a.list.filter(x => trainingSport(x.sport)).length}.`) : ''} ${L('Сделанные тренировки будут отмечаться сами, а план опирается на твою историю.', 'Done sessions get ticked off on their own, and the plan builds on your history.')}</p>
+      <div class="stack wiz-go"><button class="btn primary" data-a="onb-go" data-s="time">${L('Дальше', 'Next')}</button></div>`;
+    else b += `<p class="hint">${L('Нужен личный ключ Garmin — его создаёшь ты сам, и он даёт доступ только к чтению твоих тренировок.', 'You need your own Garmin key — you create it, and it only lets the app read your workouts.')}</p>
+      <ol class="onb-steps"><li>${L('Открой <a href="https://connect.garmin.com/" target="_blank" rel="noopener">Garmin Connect</a> в браузере и войди.', 'Open <a href="https://connect.garmin.com/" target="_blank" rel="noopener">Garmin Connect</a> in a browser and sign in.')}</li>
+        <li>${L('Настройки → <b>Personal API</b> → <b>Create key</b>. Ключ действует год.', 'Settings → <b>Personal API</b> → <b>Create key</b>. The key lasts a year.')}</li>
+        <li>${L('Скопируй ключ целиком и вставь сюда.', 'Copy the whole key and paste it here.')}</li></ol>
+      <form id="onbGarmin" class="stack"><label class="field">${L('Ключ Personal API', 'Personal API key')}<input id="onbGarminKey" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" required></label>
+      ${err}<button class="btn primary" type="submit" ${dis}>${onb.busy ? L('Проверяю ключ…', 'Checking the key…') : L('Подключить', 'Connect')}</button></form>
+      <p class="hint" style="padding-top:8px">${L('Ключ хранится на сервере и в приложении больше не показывается. Он общий с «Залом».', 'The key stays on the server and is never shown again. It’s shared with the gym app.')}</p>
+      <div class="stack" style="padding-top:8px"><button class="btn link" data-a="onb-go" data-s="time">${L('Нет Garmin или позже — дальше', 'No Garmin, or later — skip')}</button></div>`;
+  } else if (st === 'time') {
+    const p = state.prefs, tin = (f, v) => `<input data-pref="${f}" type="time" value="${esc(v)}">`;
+    b = `<h2 class="wiz-h">${L('Когда можно тренироваться', 'When you can train')}</h2>
+      <p class="hint">${L('В эти рамки и в окна календаря встанут тренировки. Поменять можно в любой момент в настройках.', 'Sessions go inside these bounds and your calendar’s free slots. Change it any time in settings.')}</p>
+      <label class="check" style="justify-content:flex-start;padding:12px 0"><input type="checkbox" data-pref="work" ${p.work ? 'checked' : ''}> ${L('Работаю по будням — это время занято', 'I work on weekdays — that time is taken')}</label>
+      <div class="wiz-row"><label class="field">${L('Работа с', 'Work from')}${tin('workStart', p.workStart)}</label><label class="field">${L('до', 'to')}${tin('workEnd', p.workEnd)}</label></div>
+      <div class="wiz-row"><label class="field">${L('Будни: не раньше', 'Weekdays: from')}${tin('wdStart', p.wdStart)}</label><label class="field">${L('и не позже', 'until')}${tin('wdEnd', p.wdEnd)}</label></div>
+      <div class="wiz-row"><label class="field">${L('Выходные: с', 'Weekends: from')}${tin('weStart', p.weStart)}</label><label class="field">${L('до', 'to')}${tin('weEnd', p.weEnd)}</label></div>
+      <div class="stack wiz-go"><button class="btn primary" data-a="onb-go" data-s="health">${L('Дальше', 'Next')}</button></div>`;
+  } else if (st === 'health') {
+    const h = state.health || {};
+    b = `<h2 class="wiz-h">${L('Есть травма или боль, которую надо беречь?', 'Any injury or pain to look after?')}</h2>
+      <p class="hint">${L('Если да — приложение будет каждый день спрашивать, как ты, и не поставит бег или тяжёлое, пока болит. Диагнозов оно не ставит.', 'If so, the app asks how you are each day and won’t schedule running or hard sessions while it hurts. It makes no diagnoses.')}</p>
+      <div class="opts" style="padding-top:8px"><button class="opt" data-a="onb-health" data-v="no" aria-pressed="${onb.health === 'no'}"><b>${L('Нет, всё в порядке', 'No, all good')}</b></button><button class="opt" data-a="onb-health" data-v="yes" aria-pressed="${onb.health === 'yes'}"><b>${L('Да, есть что беречь', 'Yes, something to look after')}</b></button></div>
+      ${onb.health === 'yes' ? `<label class="field" style="padding-top:12px">${L('Что и где', 'What and where')}<input data-health="note" value="${esc(h.note || '')}" placeholder="${L('Например: колено после операции', 'For example: knee after surgery')}"></label>
+        <label class="field">${L('Правило от врача или своё', 'A rule from your doctor, or your own')}<input data-health="rule" value="${esc(h.rule || '')}" placeholder="${L('Например: бег только после 48 ч без боли', 'For example: run only after 48 h pain-free')}"></label>` : ''}
+      <div class="stack wiz-go"><button class="btn primary" data-a="onb-done" ${onb.health ? '' : 'disabled'}>${L('Собрать план', 'Build my plan')}</button></div>`;
+  }
+  return head + `<div class="sheet-scroll wiz onb">${dots}${b}</div>`;
+}
+
+async function onbAccount() {
+  const email = ($('#onbEmail')?.value || '').trim(), password = $('#onbPw')?.value || '', code = ($('#onbCode')?.value || '').trim().toUpperCase();
+  onb.busy = true; onb.err = ''; onb.code = code || onb.code; onbRender();
+  try {
+    if (onb.mode === 'join') {
+      const {data, error} = await cloud.client.functions.invoke('train', {body: {action: 'join', email, password, code}});
+      if (error) { let b = null; try { b = await error.context?.json?.(); } catch {} throw new Error(b?.error || 'failed'); }
+      if (!data?.ok) throw new Error('failed');
+    }
+    const res = await cloud.client.auth.signInWithPassword({email, password});
+    if (res.error) throw new Error(/invalid/i.test(res.error.message) ? 'wrong' : 'failed');
+    cloud.user = res.data.session.user;
+    await afterSignIn();
+    if (!cloud.me?.member) return onbGo('code');
+    if (onb.mode === 'in' && state.onboard?.done) { toast(L('С возвращением', 'Welcome back')); try { localStorage.removeItem(ONB_KEY); } catch {} closeSheet(); render(); return; }
+    onbGo('calendar');
+  } catch (e) { onb.busy = false; onb.err = e.message; onbRender(); }
+}
+async function onbRedeem() {
+  const code = ($('#onbCode')?.value || '').trim().toUpperCase();
+  onb.busy = true; onb.err = ''; onb.code = code; onbRender();
+  const d = await fn('invite-redeem', {code});
+  if (d.error) { onb.busy = false; onb.err = d.error; return onbRender(); }
+  cloud.me = d; cloud.signedFor = null; // now a member: run the member part of signing in
+  afterSignIn();
+  onbGo('calendar');
+}
+async function garminLink(key, from) {
+  const d = await fn('garmin-link', {key});
+  if (d.error) return d.error;
+  cloud.me = d; state.local.acts = null; saveLocal();
+  await loadActs(true);
+  return null;
+}
+async function onbGarmin() {
+  const key = $('#onbGarminKey')?.value || '';
+  onb.busy = true; onb.err = ''; onbRender();
+  const e = await garminLink(key);
+  onb.busy = false; onb.err = e || ''; onbRender();
+}
+
+// Injury tracking: off unless the person turns it on (onboarding or here). On: daily pain check and the pain gate.
+function healthHTML() {
+  const h = state.health || {};
+  return `<div class="section-title">${L('Травма или боль', 'Injury or pain')}</div>
+    <label class="check" style="justify-content:flex-start;padding:4px 0 12px"><input type="checkbox" data-health="track" ${h.track ? 'checked' : ''}> ${L('Каждый день спрашивать про боль и беречь, пока болит', 'Ask about pain each day and go easy while it hurts')}</label>
+    ${h.track ? `<label class="field">${L('Что и где', 'What and where')}<input data-health="note" value="${esc(h.note || '')}" placeholder="${L('Например: колено после операции', 'For example: knee after surgery')}"></label>
+      <label class="field" style="margin-bottom:24px">${L('Правило от врача или своё', 'A rule from your doctor, or your own')}<input data-health="rule" value="${esc(h.rule || '')}" placeholder="${L('Например: бег только после 48 ч без боли', 'For example: run only after 48 h pain-free')}"></label>` : '<div style="height:12px"></div>'}`;
+}
+
+/* ---------- program tab: the plan's long view and how it's going ---------- */
+// One week counted the way the week screen counts it, plus what was skipped: done sessions (and extra Garmin ones)
+// against what was planned. Weeks before the app knew about them have no plan, only Garmin.
+function weekTally(wk) {
+  const week = state.weeks[wk], acts = weekActs(wk).filter(a => trainingSport(a.sport));
+  const bySport = {};
+  if (!week) { for (const a of acts) bySport[a.sport] = (bySport[a.sport] || 0) + a.min; return {wk, planned: 0, done: 0, planMin: 0, doneMin: acts.reduce((t, a) => t + a.min, 0), keyPlanned: 0, keyDone: 0, hardMin: 0, bySport}; }
+  const effs = week.sessions.map(s => effective(wk, s)).filter(s => s.day != null && s.status !== 'dropped');
+  const counted = effs.filter(s => s.status === 'planned' || s.status === 'done' || s.status === 'skipped');
+  const done = effs.filter(s => s.status === 'done'), ex = extras(wk, week).filter(a => trainingSport(a.sport));
+  for (const s of done) { const sp = KINDS[s.kind].sport; bySport[sp] = (bySport[sp] || 0) + (s.act?.min ?? s.min); }
+  for (const a of ex) bySport[a.sport] = (bySport[a.sport] || 0) + a.min;
+  const isKey = s => s.key || KINDS[s.kind].hard || s.kind.endsWith('_long');
+  return {
+    wk, planned: counted.length, done: done.length, planMin: counted.reduce((t, s) => t + s.min, 0),
+    doneMin: Object.values(bySport).reduce((t, m) => t + m, 0),
+    keyPlanned: counted.filter(isKey).length, keyDone: done.filter(isKey).length,
+    hardMin: done.filter(s => KINDS[s.kind].hard).reduce((t, s) => t + (s.act?.min ?? s.min), 0), bySport,
+  };
+}
+const share = (a, b) => b ? Math.round(a / b * 100) : 0;
+function programHTML() {
+  const cur = ymd(mondayOf(new Date())), p = state.plan, ow = outlookWeek(cur);
+  const sub = p ? `${L(GOALS[p.goal]?.[0] || '', GOALS[p.goal]?.[1] || '')}${p.goal === 'event' && p.eventName ? ' · ' + p.eventName : ''}${ow ? ' · ' + L(`неделя ${ow.week} из ${ow.of}`, `week ${ow.week} of ${ow.of}`) : ''}` : L('Плана пока нет', 'No plan yet');
+  let h = `<main class="screen"><header class="nav"><div class="nav-row"><button class="nav-btn" data-a="back">${icon('left')}${L('Неделя', 'Week')}</button><span class="nav-right"><button class="nav-btn icon-btn" data-a="settings" aria-label="${L('Настройки', 'Settings')}">${icon('gear', 22)}</button></span></div>
+    <h1>${L('Программа', 'Program')}<span class="sub">${esc(sub)}</span></h1></header>`;
+
+  // The goal and the long view
+  if (p?.outlook) h += `<section class="pg-card"><div class="section-title" style="padding-top:0">${L('Куда идём', 'Where this goes')}</div>${outlookHTML({...p.outlook, basis: null}, p.start, p)}</section>`;
+  else h += `<section class="pg-card"><p class="hint" style="padding-bottom:12px">${p ? L('У этого плана нет прогноза — он собран до появления «Программы». Пересобери план, и здесь появится путь по неделям.', 'This plan has no outlook — it predates this tab. Rebuild it to see the week-by-week path here.') : L('Собери план: цель, спорт и время — и здесь появится путь по неделям, фазы и прогноз формы.', 'Build a plan — goal, sports and time — and the week-by-week path, phases and form outlook show up here.')}</p>
+    <div class="stack"><button class="btn primary" data-a="plan-open">${p ? L('Собрать план заново', 'Rebuild the plan') : L('Собрать план', 'Build a plan')}</button></div></section>`;
+
+  // How it's going: the last four finished weeks
+  const weeks = [4, 3, 2, 1].map(k => weekTally(ymd(addDays(parseYmd(cur), -7 * k))));
+  const now = weekTally(cur);
+  const planned = weeks.reduce((t, w) => t + w.planned, 0), done = weeks.reduce((t, w) => t + w.done, 0);
+  const avgH = weeks.reduce((t, w) => t + w.doneMin, 0) / 60 / 4, planH = weeks.reduce((t, w) => t + w.planMin, 0) / 60 / 4;
+  let streak = 0;
+  for (const w of [...weeks].reverse()) { if (w.planned && w.done / w.planned >= 0.8) streak++; else if (w.planned) break; }
+  const prev = [8, 7, 6, 5].map(k => actualHours(ymd(addDays(parseYmd(cur), -7 * k)))), prevH = prev.reduce((t, x) => t + x, 0) / 4;
+  const trend = prevH > 0.2 ? Math.round((avgH - prevH) / prevH * 100) : null;
+  const lines = [];
+  if (planned) lines.push(L(`За 4 недели сделано ${done} из ${planned} запланированных тренировок (${share(done, planned)}%).`, `In 4 weeks you did ${done} of ${planned} planned sessions (${share(done, planned)}%).`));
+  lines.push(L(`В среднем ${fH(avgH)} в неделю${planH ? `, по плану было ${fH(planH)}` : ''}.`, `On average ${fH(avgH)} a week${planH ? `, against ${fH(planH)} planned` : ''}.`));
+  if (trend != null) lines.push(trend >= 5 ? L(`Объём растёт: +${trend}% к предыдущим 4 неделям.`, `Volume is rising: +${trend}% on the 4 weeks before.`) : trend <= -5 ? L(`Объём ниже предыдущих 4 недель на ${-trend}% — если это не разгрузка, стоит посмотреть, что мешает.`, `Volume is ${-trend}% below the 4 weeks before — unless it’s an easy block, worth seeing what’s in the way.`) : L('Объём ровный — как и предыдущие 4 недели.', 'Volume is level with the 4 weeks before.'));
+  if (ow) lines.push(L(`Сейчас — ${PHASE[ow.phase][0].toLowerCase()}: ориентир ${fH(ow.hours)} на этой неделе, сделано ${fH(now.doneMin / 60)}.`, `Now: ${PHASE[ow.phase][1].toLowerCase()} — target ${fH(ow.hours)} this week, ${fH(now.doneMin / 60)} done.`));
+  const maxMin = Math.max(1, ...weeks.map(w => Math.max(w.planMin, w.doneMin)));
+  h += `<section class="pg-card"><div class="section-title" style="padding-top:0">${L('Как идёт', 'How it’s going')}</div>
+    <div class="pg-tiles"><div><b class="num">${planned ? share(done, planned) + '%' : '—'}</b><span>${L('плана выполнено', 'of the plan done')}</span></div>
+      <div><b class="num">${streak}</b><span>${L('недель подряд ≥80%', 'weeks in a row ≥80%')}</span></div>
+      <div><b class="num">${trend == null ? '—' : (trend > 0 ? '+' : '') + trend + '%'}</b><span>${L('объём к прошлому месяцу', 'volume vs the month before')}</span></div></div>
+    <p class="pg-summary">${esc(lines.join(' '))}</p>
+    <div class="pg-weeks">${weeks.map(w => `<div class="pg-week"><span class="pg-wk num">${fDay(w.wk)}</span><span class="pg-bar">${w.planMin ? `<i class="plan" style="width:${(w.planMin / maxMin * 100).toFixed(1)}%"></i>` : ''}<i class="done" style="width:${(w.doneMin / maxMin * 100).toFixed(1)}%"></i></span><span class="pg-n num">${w.planned ? `${w.done}/${w.planned}` : fH(w.doneMin / 60)}</span></div>`).join('')}</div>
+    ${planned ? `<p class="pg-legend"><span><i class="sw done"></i>${L('сделано', 'done')}</span><span><i class="sw plan"></i>${L('план', 'planned')}</span><span class="muted">${L('справа — тренировок из плана', 'right: planned sessions done')}</span></p>` : `<p class="pg-legend"><span class="muted">${L('Недели до плана — по Garmin, часы в неделю', 'Weeks before the plan — from Garmin, hours a week')}</span></p>`}
+    <p class="hint" style="padding-top:8px">${L('Главная метрика — доля состоявшихся недель, а не идеальная тренировка: неделя на 80% — уже хорошая неделя.', 'The metric that matters is weeks that happened, not perfect sessions: an 80% week is a good week.')}</p></section>`;
+
+  // Sport balance over the same four weeks, against the usual week
+  const sum = {}; for (const w of weeks) for (const [sp, m] of Object.entries(w.bySport)) sum[sp] = (sum[sp] || 0) + m;
+  const total = Object.values(sum).reduce((t, m) => t + m, 0);
+  const tpl = {}; for (const t of state.template) { const sp = KINDS[t.kind].sport; tpl[sp] = (tpl[sp] || 0) + t.min; }
+  const tplTotal = Object.values(tpl).reduce((t, m) => t + m, 0);
+  const sports = [...new Set([...Object.keys(sum), ...Object.keys(tpl)])].filter(sp => SPORTS[sp]).sort((a, b) => (sum[b] || 0) - (sum[a] || 0));
+  if (total) h += `<section class="pg-card"><div class="section-title" style="padding-top:0">${L('Баланс за 4 недели', 'Balance over 4 weeks')}</div>
+    <div class="prog-bar pg-mix">${sports.filter(sp => sum[sp]).map(sp => `<i class="${sp}" style="width:${(sum[sp] / total * 100).toFixed(1)}%"></i>`).join('')}</div>
+    <div class="list pg-sports">${sports.map(sp => `<div class="row"><span class="t"><b><span class="dot pg-dot ${sp}"></span>${esc(L(SPORTS[sp][0], SPORTS[sp][1]))}</b><span>${tplTotal && tpl[sp] ? L(`по плану ${share(tpl[sp], tplTotal)}%`, `${share(tpl[sp], tplTotal)}% planned`) : L('вне плана', 'not in the plan')}</span></span><span class="num pg-val">${fH((sum[sp] || 0) / 60 / 4)}<span class="muted">${L('/нед', '/wk')} · ${share(sum[sp] || 0, total)}%</span></span></div>`).join('')}</div></section>`;
+
+  // Intensity: key sessions and the share of hard work
+  const keyP = weeks.reduce((t, w) => t + w.keyPlanned, 0), keyD = weeks.reduce((t, w) => t + w.keyDone, 0);
+  const hardMin = weeks.reduce((t, w) => t + w.hardMin, 0), hardShare = total ? Math.round(hardMin / total * 100) : 0;
+  if (keyP || hardMin) h += `<section class="pg-card"><div class="section-title" style="padding-top:0">${L('Интенсивность', 'Intensity')}</div>
+    <div class="pg-tiles two"><div><b class="num">${keyP ? `${keyD}/${keyP}` : '—'}</b><span>${L('главных тренировок сделано', 'key sessions done')}</span></div><div><b class="num">${hardShare}%</b><span>${L('времени — тяжёлые', 'of the time hard')}</span></div></div>
+    <p class="hint">${hardShare > 25 ? L('Тяжёлого больше обычного ориентира 15–20% — следи, чтобы лёгкие дни оставались лёгкими.', 'More hard work than the usual 15–20% — keep the easy days easy.') : L('Ориентир для любителя — 15–20% времени тяжёлых тренировок, остальное — лёгкое (правило 3, уровень B).', 'The amateur guide is 15–20% of time hard, the rest easy (rule 3, grade B).')}</p></section>`;
+
+  // What's next: the coming weeks from the outlook
+  if (p?.outlook) {
+    const next = [0, 1, 2, 3].map(k => ({wk: ymd(addDays(parseYmd(cur), 7 * k)), w: outlookWeek(ymd(addDays(parseYmd(cur), 7 * k)))})).filter(x => x.w);
+    if (next.length) h += `<section class="pg-card"><div class="section-title" style="padding-top:0">${L('Дальше', 'Coming up')}</div><div class="list">${next.map((x, i) => `<div class="row"><span class="t"><b>${i === 0 ? L('Эта неделя', 'This week') : fDay(x.wk)}</b><span>${esc(L(PHASE[x.w.phase][0], PHASE[x.w.phase][1]))}</span></span><span class="num pg-val">${fH(x.w.hours)}</span></div>`).join('')}</div>
+      <p class="hint" style="padding-top:8px">${L('Каждые выходные ассистент собирает следующую неделю по этому ориентиру и по тому, как прошла текущая.', 'Every weekend the assistant builds the next week from this guide and how the current one went.')}</p></section>`;
+    h += basisHTML(p.outlook.basis, false);
+  }
+  return h + '</main>';
+}
+
+/* ---------- invites (admins) ---------- */
+const invites = {list: null, busy: false};
+async function loadInvites(create) {
+  if (invites.busy) return;
+  invites.busy = true;
+  const d = await fn(create ? 'invite-create' : 'invite-list', create ? {uses: 1} : {});
+  invites.busy = false;
+  if (!d.error) invites.list = d.invites;
+  if (view.v === 'settings') render();
+}
+const inviteLink = code => `${location.origin}${location.pathname}?invite=${encodeURIComponent(code)}`;
+function invitesHTML() {
+  if (!cloud.me?.admin) return '';
+  if (!invites.list && !invites.busy) setTimeout(() => loadInvites(false));
+  const list = invites.list || [];
+  return `<div class="section-title">${L('Пригласить', 'Invite')}</div><p class="hint" style="padding-bottom:12px">${L('Один код — один человек. По ссылке сразу откроется регистрация с кодом.', 'One code, one person. The link opens sign-up with the code filled in.')}</p>
+    ${list.length ? `<div class="list" style="margin-bottom:12px">${list.map(v => `<div class="row"><span class="t"><b class="num">${esc(v.code)}</b><span>${v.uses >= v.max_uses ? L('Использован', 'Used') : L(`Свободен · ${v.max_uses - v.uses} из ${v.max_uses}`, `Open · ${v.max_uses - v.uses} of ${v.max_uses}`)}</span></span>${v.uses < v.max_uses ? `<button class="nav-btn" data-a="invite-copy" data-code="${esc(v.code)}">${L('Ссылка', 'Link')}</button>` : ''}</div>`).join('')}</div>` : ''}
+    <div class="stack" style="margin-bottom:24px"><button class="btn quiet" data-a="invite-new" ${invites.busy ? 'disabled' : ''}>${invites.busy ? L('Создаю…', 'Creating…') : L('Создать инвайт', 'Create an invite')}</button></div>`;
+}
+
 /* ---------- view ---------- */
 const view = {v: 'week', wk: ymd(mondayOf(new Date()))};
 if (new Date().getDay() === 0) view.wk = ymd(addDays(parseYmd(view.wk), 7)); // on Sunday, look ahead
@@ -1478,7 +1767,7 @@ function toast(msg) { const el = $('#toast'); el.textContent = msg; el.hidden = 
 
 function render() {
   const app = $('#app');
-  app.innerHTML = view.v === 'settings' ? settingsHTML() : weekHTML();
+  app.innerHTML = view.v === 'settings' ? settingsHTML() : view.v === 'program' ? programHTML() : weekHTML();
   $('#cmd').hidden = view.v !== 'week';
   $('#cmdInput').placeholder = cloud.ai ? L('Что поменялось — или спроси', 'What changed — or ask') : L('Что поменялось? «перенеси бег на чт»', 'What changed? “move run to Thu”');
   renderChips();
@@ -1494,7 +1783,7 @@ function weekHTML() {
   const sub = weekTitle(wk) + (ti >= 0 && ti <= 6 ? L(' · эта неделя', ' · this week') : ti < 0 ? (ti >= -7 ? L(' · следующая', ' · next week') : '') : '');
   let h = `<main class="screen"><header class="nav"><div class="nav-row">
     <span class="weeknav"><button class="nav-btn icon-btn" data-a="wk" data-d="-7" aria-label="${L('Прошлая неделя', 'Previous week')}">${icon('left')}</button><button class="nav-btn icon-btn" data-a="wk" data-d="7" aria-label="${L('Следующая неделя', 'Next week')}">${icon('right')}</button>${ti < 0 || ti > 6 ? `<button class="nav-btn link" data-a="wk-today">${L('Сегодня', 'Today')}</button>` : ''}</span>
-    <span class="nav-right">${cloud.ai ? `<button class="nav-btn icon-btn" data-a="chat" aria-label="${L('Ассистент', 'Assistant')}">${icon('chat', 22)}</button>` : ''}<button class="nav-btn" data-a="settings">${L('Настройки', 'Settings')}</button></span></div>
+    <span class="nav-right">${cloud.ai ? `<button class="nav-btn icon-btn" data-a="chat" aria-label="${L('Ассистент', 'Assistant')}">${icon('chat', 22)}</button>` : ''}<button class="nav-btn" data-a="program">${L('Программа', 'Program')}</button><button class="nav-btn icon-btn" data-a="settings" aria-label="${L('Настройки', 'Settings')}">${icon('gear', 22)}</button></span></div>
     <h1>${L('Неделя', 'Week')}<span class="sub">${esc(sub)}</span></h1></header>`;
   if (lastChange && lastChange.wk === wk) {
     h += `<section class="card change"><div class="card-head"><h3>${lastChange.info ? L('Ответ', 'Reply') : L('Что поменялось', 'What changed')}</h3>${!lastChange.info ? `<button class="nav-btn link" data-a="undo">${L('Отменить', 'Undo')}</button>` : `<button class="nav-btn link" data-a="dismiss">${L('Ок', 'OK')}</button>`}</div>
@@ -1616,10 +1905,11 @@ function weekListHTML(wk, week, effs, ti) {
 // Things that need a decision before the plan can be trusted: sign-in, calendar, a doctor flag.
 function alertsHTML(wk) {
   let h = '';
-  if (!cloud.user && cloud.client) h += `<button class="nudge" data-a="settings"><span>${L('Войди — подтяну календарь и Garmin', 'Sign in to bring in calendar and Garmin')}</span><span class="nudge-go">${L('Войти', 'Sign in')} ›</span></button>`;
+  if (cloud.user && cloud.me && !cloud.me.member) h += `<button class="nudge" data-a="onb-open" data-s="code"><span>${L('Введи инвайт-код — подключим календарь, Garmin и ассистента', 'Enter an invite code to connect calendar, Garmin and the assistant')}</span><span class="nudge-go">${L('Ввести', 'Enter')} ›</span></button>`;
+  else if (!cloud.user && cloud.client) h += `<button class="nudge" data-a="onb-open"><span>${L('Войди — подтяну календарь и Garmin', 'Sign in to bring in calendar and Garmin')}</span><span class="nudge-go">${L('Войти', 'Sign in')} ›</span></button>`;
   else if (cloud.user && cloud.cals && !cloud.cals.length && !(state.local.busy[wk]?.events || []).some(e => e.cal === 'file')) h += `<button class="nudge" data-a="settings"><span>${L('Подключи календарь — план встанет в свободные окна', 'Connect your calendar so the plan fits your free time')}</span><span class="nudge-go">${L('Подключить', 'Connect')} ›</span></button>`;
   const ti = todayIdx(wk);
-  if (ti >= 0 && ti <= 6 && !state.checks[todayStr()]) h += `<button class="nudge" data-a="pain-open"><span>${L('Как сегодня? Боль не отмечена', 'How is it today? Pain not logged')}</span><span class="nudge-go">${L('Отметить', 'Log')} ›</span></button>`;
+  if (state.health?.track && ti >= 0 && ti <= 6 && !state.checks[todayStr()]) h += `<button class="nudge" data-a="pain-open"><span>${L('Как сегодня? Боль не отмечена', 'How is it today? Pain not logged')}</span><span class="nudge-go">${L('Отметить', 'Log')} ›</span></button>`;
   const g = gate();
   if (g.known && (g.doctor || g.stop)) h += `<section class="card alert"><div class="card-head"><h3>${g.doctor ? L('Напиши врачу', 'Message your doctor') : L('Стоп — напиши физио', 'Stop — message your physio')}</h3><button class="nav-btn link" data-a="pain-redo">${L('Изменить', 'Edit')}</button></div><p>${esc(g.doctor ? L(`Сидя ${g.c.sit}/10, ходьба ${g.c.walk}/10${g.c.rest ? ', в покое' : ''}: по твоим правилам это повод сразу написать. Бег, вел и стена на паузе.`, `Sitting ${g.c.sit}/10, walking ${g.c.walk}/10${g.c.rest ? ', at rest' : ''}: by your rules, message them now. Running, riding and climbing paused.`) : L(`${g.max}/10 — бег, вел и стена на паузе.`, `${g.max}/10 — running, riding and climbing paused.`))}</p></section>`;
   return h;
@@ -1998,6 +2288,9 @@ function settingsHTML() {
   h += `<div class="seg" role="group" style="margin-bottom:16px"><button data-a="lang" data-l="ru" aria-pressed="${lang === 'ru'}">Русский</button><button data-a="lang" data-l="en" aria-pressed="${lang === 'en'}">English</button></div>`;
   h += acctHTML();
   h += planSettingsHTML();
+  h += healthHTML();
+  if (cloud.me?.ai) { const u = cloud.me.ai; h += `<p class="hint" style="padding:0 0 24px">${u.unlimited ? L('Ассистент: без ограничений.', 'Assistant: no limits.') : L(`Ассистент сегодня: ${u.chat.used} из ${u.chat.limit} сообщений, ${u.plan.used} из ${u.plan.limit} сборок плана. Обновляется в полночь UTC.`, `Assistant today: ${u.chat.used} of ${u.chat.limit} messages, ${u.plan.used} of ${u.plan.limit} plan builds. Resets at midnight UTC.`)}</p>`; }
+  h += invitesHTML();
   if (cloud.user) {
     h += `<div class="section-title">${L('Календарь', 'Calendar')}</div>`;
     const cals = cloud.cals || [];
@@ -2010,8 +2303,13 @@ function settingsHTML() {
       <label class="btn quiet" style="margin-bottom:24px">${L('Или загрузить файл .ics на эту неделю', 'Or load an .ics file for this week')}<input type="file" id="icsFile" accept=".ics,text/calendar" hidden></label>`;
     const a = state.local.acts;
     const since = a?.from ? parseYmd(a.from).toLocaleDateString(lang === 'ru' ? 'ru-RU' : 'en-GB', {day: 'numeric', month: 'short', year: 'numeric'}) : '';
-    h += `<div class="section-title">Garmin</div><p class="hint" style="padding-bottom:12px">${a?.linked ? L(`Подключён через «Зал» · ${a.list.length} активностей с ${since}`, `Linked via the gym app · ${a.list.length} activities since ${since}`) + (a.error ? ' · ' + esc(a.error) : '') : a?.linked === false ? L('Не подключён. Вставь ключ Personal API в «Зале» → Настройки → Garmin — он общий для обоих приложений.', 'Not linked. Paste your Personal API key in the gym app → Settings → Garmin; it’s shared.') : L('Проверяю…', 'Checking…')}</p>`;
-    if (a?.linked) h += `<div class="stack" style="margin-bottom:24px"><button class="btn quiet" data-a="history" ${histBusy.on ? 'disabled' : ''}>${histBusy.on ? L('Загружаю…', 'Loading…') : L('Загрузить историю за год', 'Load a year of history')}</button></div>`;
+    const gl = cloud.me?.garmin?.linked ?? a?.linked;
+    h += `<div class="section-title">Garmin</div>`;
+    if (gl) h += `<p class="hint" style="padding-bottom:12px">${a?.list ? L(`Подключён · ${a.list.length} активностей с ${since}`, `Linked · ${a.list.length} activities since ${since}`) : L('Подключён', 'Linked')}${a?.error ? ' · ' + esc(a.error) : ''}</p>
+      <div class="stack" style="margin-bottom:24px"><button class="btn quiet" data-a="history" ${histBusy.on ? 'disabled' : ''}>${histBusy.on ? L('Загружаю…', 'Loading…') : L('Загрузить историю за год', 'Load a year of history')}</button><button class="btn link danger" data-a="garmin-unlink">${L('Отвязать Garmin', 'Unlink Garmin')}</button></div>`;
+    else if (cloud.me?.member) h += `<p class="hint" style="padding-bottom:12px">${L('Garmin Connect → Настройки → Personal API → Create key (действует год). Скопируй ключ целиком и вставь — он общий с «Залом» и хранится на сервере.', 'Garmin Connect → Settings → Personal API → Create key (lasts a year). Paste the whole key — it’s shared with the gym app and stays on the server.')}</p>
+      <form id="garminForm" class="stack" style="margin-bottom:24px"><label class="field">${L('Ключ Personal API', 'Personal API key')}<input id="garminKey" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" required></label><button class="btn primary" type="submit">${L('Подключить Garmin', 'Connect Garmin')}</button></form>`;
+    else h += `<p class="hint" style="padding-bottom:24px">${L('Проверяю…', 'Checking…')}</p>`;
   }
   // template
   h += `<div class="section-title">${L('Обычная неделя', 'Usual week')}</div><p class="hint" style="padding-bottom:4px">${L('Из этого собирается каждая новая неделя. День — желаемый: если он занят, сессия переедет и скажет почему. Якорь не двигается.', 'Every new week starts from this. The day is a preference: if it’s busy, the session moves and says why. An anchor stays put.')}</p><div>`;
@@ -2039,7 +2337,7 @@ function settingsHTML() {
 function acctHTML() {
   if (!cloud.client) return '';
   if (cloud.user) return `<div class="section-title" style="padding-top:4px">${L('Аккаунт', 'Account')}</div><div class="list" style="margin-bottom:24px"><div class="row"><span class="t"><b>${esc(cloud.user.email || '')}</b><span id="acctStatus">${esc(acctStatus())}</span></span><button class="nav-btn" data-a="sign-out">${L('Выйти', 'Sign out')}</button></div></div>`;
-  return `<div class="section-title" style="padding-top:4px">${L('Аккаунт', 'Account')}</div><p class="hint" style="padding-bottom:12px">${L('Тот же аккаунт, что в «Зале». Без входа план живёт только на этом устройстве и не видит календарь.', 'Same account as the gym app. Without it the plan lives on this device only and can’t see your calendar.')}</p>
+  return `<div class="section-title" style="padding-top:4px">${L('Аккаунт', 'Account')}</div><div class="stack" style="margin-bottom:12px"><button class="btn quiet" data-a="onb-open" data-s="account">${L('Создать аккаунт по инвайт-коду', 'Create an account with an invite code')}</button></div><p class="hint" style="padding-bottom:12px">${L('Тот же аккаунт, что в «Зале». Без входа план живёт только на этом устройстве и не видит календарь.', 'Same account as the gym app. Without it the plan lives on this device only and can’t see your calendar.')}</p>
     <form class="stack" id="authForm" style="margin-bottom:24px"><label class="field">${L('Почта', 'Email')}<input id="authEmail" type="email" inputmode="email" autocomplete="username" autocapitalize="off" required></label>
     <label class="field">${L('Пароль', 'Password')}<input id="authPw" type="password" autocomplete="current-password" minlength="8" required></label>
     <button class="btn primary" type="submit">${L('Войти', 'Sign in')}</button></form>`;
@@ -2053,16 +2351,18 @@ async function authSubmit() {
     cloud.user = res.data.session.user; toast(L('Готово', 'Done')); render(); afterSignIn();
   } finally { if (btn.isConnected) btn.disabled = false; }
 }
-async function calAdd() {
-  const url = ($('#calUrl').value || '').trim(); if (!url) return;
+async function calAdd(from) {
+  const url = (from ?? $('#calUrl')?.value ?? '').trim(); if (!url) return;
+  const done = () => { render(); onbRender(); };
   cloud.calBusy = true; render();
+  onbRender();
   const d = await fn('cal-add', {url});
   cloud.calBusy = false;
   if (d.error) {
     toast({bad_url: L('Нужна ссылка https:// или webcal://', 'Needs an https:// or webcal:// link'), duplicate: L('Этот календарь уже подключён', 'Already connected'), too_many: L('Максимум 5 календарей', 'Up to 5 calendars'), not_ics: L('По ссылке не календарь — нужна ссылка iCal', 'That link isn’t a calendar — use the iCal one'), http_404: L('Календарь не найден — проверь ссылку', 'Calendar not found — check the link'), http_403: L('Нет доступа — нужна секретная ссылка', 'No access — use the secret link')}[d.error] || L('Не получилось загрузить календарь', 'Couldn’t load the calendar'));
-    render(); return;
+    done(); return;
   }
-  cloud.cals = d.calendars; toast(L('Календарь подключён', 'Calendar connected')); render();
+  cloud.cals = d.calendars; toast(L('Календарь подключён', 'Calendar connected')); done();
   for (const wk of Object.keys(state.weeks)) if (todayIdx(wk) <= 6) await loadBusy(wk, true);
 }
 async function icsFile(file) {
@@ -2113,8 +2413,9 @@ document.addEventListener('click', ev => {
   if (a === 'chip') { const inp = $('#cmdInput'); inp.value = el.dataset.t; inp.focus(); return; }
   if (a === 'wk') { view.wk = ymd(addDays(parseYmd(wk), +el.dataset.d)); lastChange = null; render(); if (cloud.user && cloud.cals?.length && todayIdx(view.wk) <= 6) loadBusy(view.wk); ensureHistory(view.wk); return; }
   if (a === 'wk-today') { view.wk = ymd(mondayOf(new Date())); render(); return; }
-  if (a === 'settings') { view.v = 'settings'; render(); scrollTo(0, 0); if (cloud.user) fn('cal-status').then(d => { if (!d.error) { cloud.cals = d.calendars; cloud.google = d.google; if (view.v === 'settings') render(); } }); return; }
+  if (a === 'settings') { view.v = 'settings'; render(); scrollTo(0, 0); if (cloud.user) fn('me').then(d => { if (!d.error) { cloud.me = d; if (view.v === 'settings') render(); } }); if (cloud.user) fn('cal-status').then(d => { if (!d.error) { cloud.cals = d.calendars; cloud.google = d.google; if (view.v === 'settings') render(); } }); return; }
   if (a === 'back') { view.v = 'week'; render(); return; }
+  if (a === 'program') { view.v = 'program'; render(); scrollTo(0, 0); if (cloud.user && state.local.acts?.linked) ensureHist12().then(() => { if (view.v === 'program') render(); }); return; }
   if (a === 'undo') return undo(wk);
   if (a === 'dismiss') { lastChange = null; render(); return; }
   if (a === 'open') return sessionSheet(el.dataset.id);
@@ -2177,7 +2478,16 @@ document.addEventListener('click', ev => {
     persist(); render(); return;
   }
   if (a === 'lang') { lang = el.dataset.l; try { localStorage.setItem('train.lang', lang); } catch {} render(); return; }
-  if (a === 'sign-out') { cloud.client.auth.signOut(); cloud.user = null; cloud.cals = null; cloud.ai = false; render(); return; }
+  if (a === 'sign-out') { cloud.client.auth.signOut(); cloud.user = null; cloud.cals = null; cloud.ai = false; cloud.me = null; cloud.signedFor = null; cloud.signP = null; invites.list = null; render(); return; }
+  if (a === 'onb-open') return openOnboarding(el.dataset.s);
+  if (a === 'onb-go') return onbGo(el.dataset.s);
+  if (a === 'onb-mode') { onb.mode = el.dataset.m; return onbGo('account'); }
+  if (a === 'onb-skip' || a === 'onb-later') { try { localStorage.removeItem(ONB_KEY); } catch {} if (a === 'onb-skip' && !cloud.user) { state.onboard = {done: false, skipped: isoNow()}; persist(); } closeSheet(); render(); return; }
+  if (a === 'onb-health') { onb.health = el.dataset.v; state.health = {...(state.health || {}), track: onb.health === 'yes'}; persist(); return onbRender(); }
+  if (a === 'onb-done') return onbFinish(true);
+  if (a === 'invite-new') return loadInvites(true);
+  if (a === 'invite-copy') { const url = inviteLink(el.dataset.code); (navigator.share ? navigator.share({title: L('Неделя', 'Week'), text: L('Приглашение в «Неделю»', 'An invite to Week'), url}).catch(() => {}) : navigator.clipboard.writeText(url).then(() => toast(L('Ссылка скопирована', 'Link copied')))); return; }
+  if (a === 'garmin-unlink') { if (!confirm(L('Отвязать Garmin? Ключ общий с «Залом» — там он тоже отвяжется.', 'Unlink Garmin? The key is shared with the gym app — it will be unlinked there too.'))) return; fn('garmin-unlink').then(d => { if (!d.error) { cloud.me = d; state.local.acts = null; saveLocal(); } render(); }); return; }
   if (a === 'history') {
     const from = ymd(addDays(new Date(), -365)), to = state.local.acts?.from || todayStr();
     if (to <= from) { toast(L('Год истории уже загружен', 'A year of history is already here')); return; }
@@ -2231,6 +2541,10 @@ document.addEventListener('change', ev => {
     else if (f === 'anchor') tpl.anchor = el.checked; else if (f === 'kind') { tpl.kind = el.value; tpl.min = KINDS[el.value].min; delete tpl.detail; delete tpl.key; render(); } else tpl[f] = el.value;
     persist(); return;
   }
+  if (el.dataset.health != null) {
+    state.health = {...(state.health || {}), [el.dataset.health]: el.type === 'checkbox' ? el.checked : el.value.slice(0, 160)};
+    persist(); if (el.type === 'checkbox') render(); return;
+  }
   if (el.dataset.pref != null) {
     const f = el.dataset.pref;
     state.prefs[f] = f === 'work' ? el.checked : f === 'buffer' ? Math.max(0, Math.min(90, +el.value || 0)) : el.value;
@@ -2248,6 +2562,11 @@ document.addEventListener('submit', ev => {
   if (ev.target.id === 'chatForm') { const inp = $('#chatInput'), v = inp.value.trim(); if (!v || chat.busy) return; inp.value = ''; growInput(inp); sendChat(v); }
   if (ev.target.id === 'authForm') authSubmit();
   if (ev.target.id === 'calForm') calAdd();
+  if (ev.target.id === 'onbAccount') onbAccount();
+  if (ev.target.id === 'onbRedeem') onbRedeem();
+  if (ev.target.id === 'onbCal') calAdd($('#onbCalUrl')?.value);
+  if (ev.target.id === 'onbGarmin') onbGarmin();
+  if (ev.target.id === 'garminForm') { const b = $('#garminForm button'); b.disabled = true; garminLink($('#garminKey').value).then(e => { if (e) toast(onbErr(e)); else toast(L('Garmin подключён', 'Garmin connected')); render(); }); }
 });
 document.addEventListener('keydown', ev => {
   if (ev.key === 'Escape' && !$('#sheet').hidden) closeSheet();
@@ -2259,7 +2578,7 @@ document.addEventListener('input', ev => { if (ev.target.id === 'chatInput') gro
 document.addEventListener('pointerdown', ev => { if (ev.target.closest('.chip')) ev.preventDefault(); });
 
 // Debug hook for local testing (busy/acts injection); harmless in production.
-window.trainDebug = {get state() { return state; }, get cloud() { return cloud; }, openChat, chatContext, openWizard, wiz, rulesPlan, projectOutlook, outlookWeek, buildPlan, applyWeekPlan, makeWeekly, maybeWeekly, weeklyDue, planContext, proposalSheet, view, run, parse, onBusy, matchActs, render, persist, place, setBusy(wk, events) { state.local.busy[wk] = {at: Date.now(), events}; saveLocal(); onBusy(wk); }, setActs(list) { state.local.acts = {at: Date.now(), list, linked: true}; saveLocal(); for (const wk of Object.keys(state.weeks)) { const week = state.weeks[wk], before = snapshot(week), lines = matchActs(wk, week); if (lines.length) commit(wk, week, before, 'Garmin', lines); } render(); }};
+window.trainDebug = {get state() { return state; }, get cloud() { return cloud; }, openChat, chatContext, openWizard, openOnboarding, onb, onbGo, wiz, rulesPlan, projectOutlook, outlookWeek, buildPlan, applyWeekPlan, makeWeekly, maybeWeekly, weeklyDue, planContext, proposalSheet, view, run, parse, onBusy, matchActs, render, persist, place, setBusy(wk, events) { state.local.busy[wk] = {at: Date.now(), events}; saveLocal(); onBusy(wk); }, setActs(list) { state.local.acts = {at: Date.now(), list, linked: true}; saveLocal(); for (const wk of Object.keys(state.weeks)) { const week = state.weeks[wk], before = snapshot(week), lines = matchActs(wk, week); if (lines.length) commit(wk, week, before, 'Garmin', lines); } render(); }};
 
 // Back from Google's consent screen: #google=ok or #google=<reason>.
 const googleBack = (location.hash.match(/google=([\w-]+)/) || [])[1];
@@ -2271,7 +2590,14 @@ if (googleBack) {
 
 render();
 // First open on this device, not signed in: start with the plan wizard.
-initCloud().then(() => { if (firstRun && !cloud.user && !state.plan) openWizard(); });
+initCloud().then(async () => {
+  if (cloud.user) await cloud.ready;
+  const saved = onbSaved();
+  if (saved && googleBack && cloud.user) openOnboarding(saved === 'calendar' ? 'calendar' : saved);
+  else if (inviteFromUrl) { history.replaceState(null, '', location.pathname); if (!cloud.user) { onb.mode = 'join'; openOnboarding('account'); } else if (cloud.me && !cloud.me.member) openOnboarding('code'); else toast(L('Ты уже в «Неделе»', 'You’re already in')); }
+  else if (firstRun && !cloud.user) openOnboarding('hello');
+  else if (cloud.user && cloud.me?.member && !state.onboard?.done && !state.plan) openOnboarding('calendar');
+});
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   // A new deploy installs a new worker; when it takes over, reload once so the page runs the new code.
   const hadController = !!navigator.serviceWorker.controller;
