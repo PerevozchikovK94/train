@@ -812,7 +812,7 @@ function chatContext(focus) {
     plan_week: {monday: wk, relation: ti < 0 ? 'будущая' : ti > 6 ? 'прошедшая' : 'текущая', ...(week?.planNote ? {idea: week.planNote} : {}), sessions: week ? week.sessions.map(s => sessCtx(s, wk)) : [], away: week?.away || [], sick: week?.sick || [], calendar_busy: busyCtx(wk), recent_changes: (week?.log || []).slice(0, 5).map(e => ({text: e.text, lines: e.lines}))},
     pain: painCtx(),
     garmin: garminCtx(),
-    plan: state.plan ? {...answersCtx(state.plan), summary: state.plan.summary, since: state.plan.start} : 'план не собран',
+    plan: state.plan ? {...answersCtx(state.plan), summary: state.plan.summary, since: state.plan.start, ...(state.plan.outlook ? {outlook: state.plan.outlook.headline, outlook_this_week: outlookWeek(wk)} : {})} : 'план не собран',
     template: templateCtx(),
     sport_answers: state.asks,
     ...(prop?.status === 'new' ? {next_week_proposal: {monday: nwk, summary: prop.summary, sessions: prop.sessions.map(x => ({day: DAYS_RU[x.day], kind: KINDS[x.kind].ru, min: x.min, detail: x.detail}))}} : {}),
@@ -1076,7 +1076,7 @@ function planContext(mode, t) {
   if (mode === 'plan') ctx.answers = answersCtx(wiz.a);
   else {
     const weeksIn = state.plan.start ? Math.max(1, Math.round((parseYmd(t.wk) - parseYmd(state.plan.start)) / 6048e5) + 1) : null;
-    ctx.plan = {...answersCtx(state.plan), summary: state.plan.summary, started: state.plan.start, weeks_in_plan: weeksIn};
+    ctx.plan = {...answersCtx(state.plan), summary: state.plan.summary, started: state.plan.start, weeks_in_plan: weeksIn, ...(state.plan.outlook ? {outlook: state.plan.outlook.headline, outlook_week: outlookWeek(t.wk) || 'прогноз закончился'} : {})};
     const w = state.weeks[cur];
     ctx.this_week = w ? {monday: cur, idea: w.planNote || null, sessions: w.sessions.map(s => sessCtx(s, cur)), extra_from_garmin: extras(cur, w).filter(a => trainingSport(a.sport)).map(a => ({date: a.start.slice(0, 10), sport: a.sport, min: a.min})), away: w.away || [], sick: w.sick || []} : 'не было плана';
   }
@@ -1084,7 +1084,7 @@ function planContext(mode, t) {
 }
 // The model's week, in the app's shape. Days are 0–6, kinds are app kinds.
 function planOf(ev) {
-  return {summary: ev.summary, review: ev.review || '', rationale: ev.rationale || [], sessions: (ev.sessions || []).filter(x => KINDS[x.kind]), ...(ev.base ? {base: ev.base.filter(x => KINDS[x.kind])} : {})};
+  return {summary: ev.summary, review: ev.review || '', rationale: ev.rationale || [], sessions: (ev.sessions || []).filter(x => KINDS[x.kind]), ...(ev.base ? {base: ev.base.filter(x => KINDS[x.kind])} : {}), ...(ev.outlook ? {outlook: ev.outlook} : {})};
 }
 async function aiPlan(mode, ctx, signal) {
   let plan = null, err = null;
@@ -1127,6 +1127,174 @@ function rulesPlan(a, t) {
       hard ? L('Одна тренировка качества, остальное — в лёгкой зоне', 'One quality session, the rest easy') : L('Всё в лёгкой зоне — объём важнее скорости', 'All easy — volume over speed')],
     base: out, sessions: out.filter(x => x.day >= t.from), target: t};
 }
+
+/* ---------- plan outlook: the long view — weekly hours by phase to the event (or 12 weeks), and a form line ---------- */
+const PHASE = {
+  base: ['База', 'Base'], build: ['Развитие', 'Build'], peak: ['Пик', 'Peak'], deload: ['Разгрузка', 'Easy week'],
+  taper: ['Подводка', 'Taper'], race: ['Старт', 'Race'], keep: ['Поддержка', 'Maintain'], return: ['Возвращение', 'Return'],
+};
+// "Form" here is the ~6-week rolling weekly volume — the same smoothing CTL uses, on hours instead of TSS.
+const FORM_K = 1 - Math.exp(-7 / 42);
+const fH = h => fHours(h * 60);
+const fDay = wk => parseYmd(wk).toLocaleDateString(lang === 'ru' ? 'ru-RU' : 'en-GB', {day: 'numeric', month: 'short'});
+const weeksFrom = (a, b) => Math.round((parseYmd(b) - parseYmd(a)) / 6048e5);
+function eventWeeks(a, wk0) { return a.goal === 'event' && a.eventDate ? weeksFrom(wk0, ymd(mondayOf(parseYmd(a.eventDate)))) + 1 : 0; }
+// The rules version of the outlook: used without the assistant, or when its outlook didn't come through.
+function projectOutlook(a, h0, wk0) {
+  const H = Math.max(1, a.hours), ev = eventWeeks(a, wk0), goal = ev >= 4 ? 'event' : a.goal === 'event' ? 'grow' : a.goal;
+  const n = goal === 'event' ? Math.min(32, ev) : 12;
+  const g = {keep: 1, grow: 1.06, event: 1.06, back: 1.1}[goal] || 1;
+  const cap = goal === 'keep' ? h0 : goal === 'back' ? Math.max(H, h0) : Math.max(H, h0) * (goal === 'event' ? 1.3 : 1.2);
+  const weeks = []; let lvl = Math.max(0.5, h0), back = 0;
+  for (let i = 0; i < n; i++) {
+    const left = goal === 'event' ? ev - 1 - i : 99;
+    let phase, h = lvl;
+    if (left === 0) { phase = 'race'; h = lvl * 0.5; }
+    else if (left <= 2) { phase = 'taper'; h = lvl * (left === 2 ? 0.75 : 0.6); }
+    else if (i % 4 === 3) { phase = 'deload'; h = lvl * 0.65; }
+    else {
+      phase = goal === 'keep' ? 'keep' : goal === 'back' ? (lvl >= H * 0.97 ? 'keep' : 'return') : goal === 'event' && left <= 5 ? 'peak' : i < Math.max(3, n * 0.35) ? 'base' : 'build';
+      if (phase === 'return') back = i + 1;
+      if (phase !== 'peak') lvl = Math.min(cap, lvl * g);
+    }
+    weeks.push({hours: Math.round(h * 2) / 2, phase});
+  }
+  const top = weeks.reduce((b, w, i) => w.hours > weeks[b].hours ? i : b, 0), at = i => ymd(addDays(parseYmd(wk0), 7 * i));
+  const name = a.eventName || L('старт', 'the event');
+  const headline = {
+    keep: L(`Цель — держать форму, поэтому объём ровный, около ${fH(h0)} в неделю, и каждая 4-я неделя легче. Без рывков: форма держится на уровне последних недель.`, `The goal is to keep fit, so the volume stays level at about ${fH(h0)} a week, with every 4th week easier. No spikes: fitness holds where it’s been.`),
+    grow: L(`Цель — расти, поэтому объём прибавляет ~6% в неделю до ~${fH(cap)}, а каждая 4-я неделя — разгрузочная: так рост держится без перегруза.`, `The goal is to get fitter, so the volume adds ~6% a week up to ~${fH(cap)}, and every 4th week is easy — growth without overload.`),
+    event: L(`Цель — ${name}, ${fDay(a.eventDate || at(n - 1))}, поэтому ${n} нед.: база → развитие → пик, за 2 недели до старта — подводка.`, `The goal is ${name} on ${fDay(a.eventDate || at(n - 1))}, so ${n} weeks: base → build → peak, with a 2-week taper before the race.`),
+    back: L(`Цель — вернуться, поэтому начинаем ниже прошлого уровня и плавно, без скачков, выходим к ~${fH(H)} в неделю${back ? ` — это ~${back} нед` : ""}.`, `The goal is to come back, so we start below your old level and build smoothly to ~${fH(H)} a week${back ? ` over ${back} weeks` : ''}.`),
+  }[goal];
+  const expect = [L(`Самая объёмная неделя — ${fH(weeks[top].hours)}, с ${fDay(at(top))}`, `Biggest week — ${fH(weeks[top].hours)}, from ${fDay(at(top))}`)];
+  const easy = weeks.map((w, i) => w.phase === 'deload' ? fDay(at(i)) : null).filter(Boolean).slice(0, 3);
+  if (easy.length) expect.push(L(`Лёгкие недели: ${easy.join(', ')} — и дальше каждая 4-я`, `Easy weeks: ${easy.join(', ')}, then every 4th`));
+  if (goal === 'event') expect.push(L(`Подводка с ${fDay(at(Math.max(0, n - 3)))} — объём падает, свежесть растёт`, `Taper from ${fDay(at(Math.max(0, n - 3)))} — volume drops, freshness builds`));
+  // What the rules version leans on: the same rulebook numbers the assistant cites.
+  const nos = [1, 2, 71, 77];
+  if (goal === 'event') nos.push(78);
+  if (goal === 'back') nos.push(34);
+  if (a.sports?.includes('gym')) nos.push(8);
+  if (a.sports?.includes('run')) nos.push(69);
+  const basis = nos.filter(no => BASIS[no]).map(no => ({no, why: L(BASIS[no].why[0], BASIS[no].why[1]), grade: BASIS[no].grade, sec: BASIS[no].sec}));
+  return {headline, weeks, expect, basis, by: 'rules'};
+}
+function withOutlook(r, a) {
+  if (!r.outlook) r.outlook = projectOutlook(a, planTotal(r.base?.length ? r.base : r.sessions) / 60, r.target.wk);
+  return r;
+}
+// Where the plan says this week should be: hours and phase, or null past the horizon.
+function outlookWeek(wk) {
+  const o = state.plan?.outlook; if (!o || !state.plan.start) return null;
+  const i = weeksFrom(state.plan.start, wk), w = o.weeks[i];
+  return w ? {hours: w.hours, phase: w.phase, week: i + 1, of: o.weeks.length} : null;
+}
+function actualHours(wk) {
+  const e = ymd(addDays(parseYmd(wk), 7));
+  return (state.local.acts?.list || []).filter(a => trainingSport(a.sport) && a.start.slice(0, 10) >= wk && a.start.slice(0, 10) < e).reduce((t, a) => t + a.min, 0) / 60;
+}
+// Eight weeks of Garmin, then the plan's weeks. Past weeks are what happened; a thin tick shows what was planned.
+function outlookChart(o, start, a) {
+  const cur = ymd(mondayOf(new Date())), acts = state.local.acts, known = acts?.list?.length ? acts.from || '0000-00-00' : null;
+  const rows = [];
+  for (let wk = ymd(addDays(parseYmd(cur), -56)); ; wk = ymd(addDays(parseYmd(wk), 7))) {
+    const i = weeksFrom(start, wk), plan = i >= 0 ? o.weeks[i] : null;
+    if (i >= o.weeks.length) break;
+    if (wk < cur || wk < start) { if (known && wk >= ymd(mondayOf(parseYmd(known)))) rows.push({wk, past: true, h: actualHours(wk), plan}); }
+    else if (plan) rows.push({wk, past: false, h: plan.hours, plan});
+  }
+  if (!rows.some(r => !r.past)) return `<p class="hint">${L('Прогноз плана закончился — собери план заново, чтобы увидеть следующий отрезок.', 'The plan’s outlook has run out — rebuild the plan to see the next stretch.')}</p>`;
+  const n = rows.length, max = Math.max(1, ...rows.map(r => Math.max(r.h, r.plan?.hours || 0))) * 1.08;
+  let f = null; const form = [];
+  const seed = rows.filter(r => r.past).slice(0, 4);
+  f = seed.length ? seed.reduce((t, r) => t + r.h, 0) / seed.length : rows[0].h;
+  for (const r of rows) { f += (r.h - f) * FORM_K; form.push(f); }
+  const now = rows.findIndex(r => !r.past), f0 = now > 0 ? form[now - 1] : form[0], f1 = form[n - 1], last = rows[n - 1];
+  const ph = r => r.plan ? L(PHASE[r.plan.phase][0], PHASE[r.plan.phase][1]) : '';
+  const cols = rows.map((r, i) => {
+    const cls = r.past ? 'past' : r.plan.phase === 'race' ? 'race' : r.plan.phase === 'deload' || r.plan.phase === 'taper' ? 'light' : 'plan';
+    const read = `${L('Неделя с', 'Week of')} ${fDay(r.wk)}: ${r.past ? L('было', 'did') + ' ' + fH(r.h) + (r.plan ? ` ${L('из', 'of')} ${fH(r.plan.hours)}` : '') : L('план', 'plan') + ' ' + fH(r.h)}${r.plan ? ' · ' + ph(r) : ''} · ${L('форма', 'form')} ${fH(form[i])}`;
+    return `<span class="ol-col" data-r="${esc(read)}"><i class="${cls}" style="height:${(r.h / max * 100).toFixed(1)}%"></i>${r.past && r.plan ? `<b class="ol-tick" style="bottom:${(r.plan.hours / max * 100).toFixed(1)}%"></b>` : ''}</span>`;
+  }).join('');
+  // Phase strip: an easy week belongs to the stretch it sits in; Garmin weeks are one stretch.
+  const segs = [];
+  rows.forEach((r, i) => {
+    const key = r.past ? 'past' : r.plan.phase === 'deload' && segs.length && segs[segs.length - 1].key !== 'past' ? segs[segs.length - 1].key : r.plan.phase;
+    if (segs.length && segs[segs.length - 1].key === key) segs[segs.length - 1].n++; else segs.push({key, n: 1});
+  });
+  const strip = segs.map(s => { const name = s.key === 'past' ? L('было', 'so far') : L(PHASE[s.key][0], PHASE[s.key][1]); return `<span style="flex:${s.n}" title="${esc(name)}">${s.n >= 3 || (s.key === 'race') ? esc(s.key === 'race' ? '★' : name) : ''}</span>`; }).join('');
+  const line = form.map((v, i) => `${i + 0.5},${(100 - v / max * 100).toFixed(1)}`).join(' ');
+  const def = now > 0 ? L(`Форма ${fH(f0)} → ${fH(f1)} в неделю к ${fDay(last.wk)}`, `Form ${fH(f0)} → ${fH(f1)} a week by ${fDay(last.wk)}`) : L(`Форма к ${fDay(last.wk)} — ${fH(f1)} в неделю`, `Form by ${fDay(last.wk)} — ${fH(f1)} a week`);
+  return `<figure class="ol" aria-label="${esc(def)}">
+    <div class="ol-legend"><span><i class="sw past"></i>${L('было', 'done')}</span><span><i class="sw plan"></i>${L('план', 'plan')}</span><span><i class="sw light"></i>${L('легче', 'easier')}</span><span><i class="sw line"></i>${L('форма — средний объём за ~6 нед.', 'form — ~6-week average volume')}</span></div>
+    <div class="ol-plot"><span class="ol-max num">${fH(max / 1.08)}</span>${cols}<svg viewBox="0 0 ${n} 100" preserveAspectRatio="none" aria-hidden="true"><polyline points="${line}"/></svg>${now > 0 ? `<span class="ol-now" style="left:${(now / n * 100).toFixed(2)}%"><em>${L('сейчас', 'now')}</em></span>` : ''}</div>
+    <div class="ol-strip">${strip}</div>
+    <div class="ol-dates num"><span>${fDay(rows[0].wk)}</span><span>${last.plan?.phase === 'race' && a?.eventDate ? `${a.eventName ? esc(a.eventName) + ' · ' : ''}${fDay(a.eventDate)}` : fDay(last.wk)}</span></div>
+    <p class="ol-read" data-d="${esc(def)}">${esc(def)}</p></figure>`;
+}
+function outlookHTML(o, start, a, open) {
+  if (!o) return '';
+  return `<p class="ol-head">${esc(o.headline)}</p>${outlookChart(o, start, a)}${o.expect?.length ? `<ul class="plan-why">${o.expect.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}${basisHTML(o.basis, open)}`;
+}
+
+/* ---------- what the plan stands on: rulebook rules, their evidence grade, the key studies ---------- */
+// Rule numbers are the rulebook's (apps/training/knowledge/reports, section 16). Sources come from the project's
+// research notes; `why` is the rules version's own wording when the assistant isn't the one building the plan.
+const BASIS = {
+  1: {grade: 'A/B', sec: '§1.1', why: ['Большая часть объёма — лёгкая, немного темпа и интервалов: для любителя пирамида работает не хуже «80/20»', 'Most volume easy, some tempo and intervals: for amateurs a pyramid works as well as “80/20”'],
+    src: [['Rosenblat et al. 2025, Sports Med — network meta-analysis', '10.1007/s40279-024-02149-3'], ['Seiler 2010, IJSPP', '10.1123/ijspp.5.3.276']]},
+  2: {grade: 'C (на базе B)', sec: '§1.5', why: ['1–2 тяжёлые тренировки в неделю, между ними — лёгкие дни', '1–2 hard sessions a week, easy days between them'],
+    src: [['Seiler 2010, IJSPP', '10.1123/ijspp.5.3.276'], ['Stöggl & Sperlich 2014, Front Physiol', '10.3389/fphys.2014.00033']]},
+  3: {grade: 'B', sec: '§1.5', src: [['Stöggl & Sperlich 2014, Front Physiol', '10.3389/fphys.2014.00033']]},
+  4: {grade: 'B', sec: '§1.1', src: [['Stöggl & Sperlich 2014, Front Physiol', '10.3389/fphys.2014.00033']]},
+  5: {grade: 'B/C', sec: '§7.1–7.2', src: [['Etxebarria, Mujika & Pyne 2019, Sports', '10.3390/sports7050101']]},
+  6: {grade: 'B/C', sec: '§7.1–7.2', src: [['Etxebarria, Mujika & Pyne 2019, Sports', '10.3390/sports7050101']]},
+  8: {grade: 'A/B', sec: '§5.1–5.2', why: ['Зал остаётся в плане: тяжёлая силовая улучшает экономичность и снижает риск травм', 'The gym stays: heavy strength improves economy and lowers injury risk'],
+    src: [['Rønnestad & Mujika 2014, Scand J Med Sci Sports', '10.1111/sms.12104'], ['Berryman et al. 2018, IJSPP', '10.1123/ijspp.2017-0032'], ['Lauersen et al. 2018, BJSM', '10.1136/bjsports-2018-099078']]},
+  23: {grade: 'A/B', sec: '§1.3', src: [['Milanović et al. 2015, Sports Med — meta-analysis', '10.1007/s40279-015-0365-0']]},
+  32: {grade: 'B', sec: '§1.3', src: [['Milanović et al. 2015, Sports Med — meta-analysis', '10.1007/s40279-015-0365-0']]},
+  12: {grade: 'A/B', sec: '§10.4–10.5', src: [['Bélanger-Gravel et al. 2013, Health Psychol Rev — meta-analysis', '10.1080/17437199.2011.560095']]},
+  34: {grade: 'A/B → C', sec: '§10.1', why: ['После перерыва — откат на шаг назад и rebuild, а не возврат к прежнему объёму', 'After a break, step back and rebuild instead of jumping to the old volume'],
+    src: [['Zheng et al. 2022, Biomed Res Int — meta-analysis', '10.1155/2022/2130993']]},
+  43: {grade: 'A/B', sec: '§10.5', src: [['Ntoumanis et al. 2021, Health Psychol Rev — meta-analysis', '10.1080/17437199.2020.1718529']]},
+  69: {grade: 'B', sec: '§2.2', why: ['Пробежка не длиннее самой длинной за месяц больше чем на ~10% — главный предиктор беговых травм', 'No run more than ~10% longer than your longest this month — the main predictor of running injuries'],
+    src: [['Frandsen et al. 2025, BJSM (Garmin-RUNSAFE, 5 205 бегунов)', null, 'https://researchportal.lih.lu/en/publications/how-much-running-is-too-much-identifying-high-risk-running-sessio/'], ['Buist et al. 2008, Am J Sports Med — RCT: «10% в неделю» не защищает', '10.1177/0363546507307505']]},
+  70: {grade: 'B', sec: '§2.2', src: [['Nielsen et al. 2014, JOSPT', '10.2519/jospt.2014.5164']]},
+  71: {grade: 'C', sec: '§9.2', why: ['Объём растёт плавно, в пределах +10–20% к среднему за 3–4 недели — это конвенция, не закон', 'Volume rises gently, within +10–20% of the 3–4-week average — a convention, not a law'],
+    src: [['Nielsen et al. 2014, JOSPT', '10.2519/jospt.2014.5164']]},
+  77: {grade: 'C [CONTESTED]', sec: '§9.3', why: ['Каждая 4-я неделя легче на 30–40%: распространённая практика, точная частота наукой не доказана', 'Every 4th week 30–40% easier: common practice, the exact rhythm isn’t proven'],
+    src: [['Bell et al. 2023, Sports Med Open — Delphi consensus', '10.1186/s40798-023-00633-0']]},
+  78: {grade: 'A', sec: '§9.4', why: ['Подводка ~2 недели: объём −40–60%, интенсивность и частота сохраняются', '~2-week taper: volume −40–60%, intensity and frequency kept'],
+    src: [['Bosquet et al. 2007, MSSE — meta-analysis', '10.1249/mss.0b013e31806010e0']]},
+  79: {grade: 'A', sec: '§5.1–5.2', src: [['Rønnestad & Mujika 2014, Scand J Med Sci Sports', '10.1111/sms.12104']]},
+  81: {grade: 'A/B', sec: '§5.3', src: [['Schumann et al. 2022, Sports Med — meta-analysis', '10.1007/s40279-021-01587-7'], ['Petré et al. 2021, Sports Med — meta-analysis', '10.1007/s40279-021-01426-9']]},
+};
+const gradeShort = g => String(g || '').replace(/\s*\([^)]*\)/g, '').replace(/\s*\[[^\]]*\]/g, '').trim();
+const gradeKey = g => (String(g || '').trim()[0] || 'C').toUpperCase();
+function basisHTML(list, open) {
+  if (!list?.length) return '';
+  const items = list.map(b => {
+    const known = BASIS[b.no], g = b.grade || known?.grade || '', contested = /CONTESTED/.test(g), src = known?.src || [];
+    return `<li><span class="grade g${gradeKey(g)}" title="${esc(g)}">${esc(gradeShort(g))}</span><div class="basis-t"><span>${esc(b.why)}${contested ? ` <em class="basis-flag">${L('спорно', 'contested')}</em>` : ''}</span>
+      ${b.text ? `<span class="basis-rule">${L('Правило', 'Rule')} ${b.no}${b.sec ? ' · ' + esc(b.sec) : ''}: ${esc(b.text)}</span>` : `<span class="basis-rule">${L('Правило', 'Rule')} ${b.no}${b.sec || known?.sec ? ' · ' + esc(b.sec || known.sec) : ''}</span>`}
+      ${src.length ? `<span class="basis-src">${src.map(([t, doi, url]) => `<a href="${esc(url || 'https://doi.org/' + doi)}" target="_blank" rel="noopener">${esc(t)}</a>`).join('')}</span>` : ''}</div></li>`;
+  }).join('');
+  return `<details class="basis" ${open ? 'open' : ''}><summary>${L('На чём основано', 'What this is based on')} <span class="muted">· ${list.length} ${L('правил из свода исследований', 'rules from the research rulebook')}</span></summary>
+    <ul class="basis-list">${items}</ul>
+    <p class="basis-legend"><b>A</b> — ${L('мета-анализы или несколько RCT', 'meta-analyses or several RCTs')} · <b>B</b> — ${L('один RCT или согласованные когортные данные', 'one RCT or consistent cohort data')} · <b>C</b> — ${L('консенсус экспертов, гайдлайн или практика', 'expert consensus, guideline or practice')}. ${L('«Спорно» — данные расходятся. Свод правил собран под любителей 30–45 лет по мета-анализам, RCT и консенсусам; приложение не ставит диагнозов и не принимает медицинских решений.', '“Contested” — the data disagree. The rulebook is built for amateurs aged 30–45 from meta-analyses, RCTs and consensus statements; the app makes no diagnoses or medical calls.')}</p></details>`;
+}
+function olShow(c) {
+  const f = c.closest('.ol'); if (!f) return;
+  f.querySelectorAll('.ol-col.on').forEach(x => x.classList.remove('on'));
+  c.classList.add('on'); f.querySelector('.ol-read').textContent = c.dataset.r;
+}
+document.addEventListener('pointerover', ev => { const c = ev.target.closest?.('.ol-col'); if (c && ev.pointerType === 'mouse') olShow(c); });
+document.addEventListener('pointerout', ev => {
+  const p = ev.target.closest?.('.ol-plot'); if (!p || ev.pointerType !== 'mouse' || p.contains(ev.relatedTarget)) return;
+  const f = p.closest('.ol'), r = f.querySelector('.ol-read');
+  f.querySelectorAll('.ol-col.on').forEach(x => x.classList.remove('on')); r.textContent = r.dataset.d;
+});
 
 // Where a new plan starts: the rest of this week if it's Mon–Fri, otherwise next week.
 function planTarget() {
@@ -1177,8 +1345,8 @@ function wizHTML() {
     else if (wiz.error) body = `<div class="wiz-wait"><b>${esc(chatErr(wiz.error))}</b><div class="stack" style="width:100%;padding-top:12px"><button class="btn primary" data-a="wiz-build">${L('Попробовать ещё раз', 'Try again')}</button><button class="btn quiet" data-a="wiz-rules">${L('Собрать по правилам', 'Build by rules instead')}</button></div></div>`;
     else if (r) {
       const t = r.target, same = r.base && t.from === 0 && r.base.length === r.sessions.length;
-      body = `<h2 class="wiz-h">${esc(r.summary)}</h2>${r.rationale.length ? `<ul class="plan-why">${r.rationale.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
-        <div class="section-title">${t.wk === ymd(mondayOf(new Date())) ? L('Эта неделя', 'This week') : L('Следующая неделя', 'Next week')} · ${esc(weekTitle(t.wk))}<span class="plan-total num">${fHours(planTotal(r.sessions))}</span></div>${r.sessions.length ? planRowsHTML(r.sessions) : `<p class="hint">${L('На эту неделю ничего — начнём с понедельника', 'Nothing this week — we start on Monday')}</p>`}
+      body = `<div class="section-title" style="padding-top:0">${L('Куда идём', 'Where this goes')}</div>${outlookHTML(r.outlook, t.wk, wiz.a, true)}
+        <div class="section-title">${t.wk === ymd(mondayOf(new Date())) ? L('Эта неделя', 'This week') : L('Следующая неделя', 'Next week')} · ${esc(weekTitle(t.wk))}<span class="plan-total num">${fHours(planTotal(r.sessions))}</span></div><p class="plan-sum">${esc(r.summary)}</p>${r.rationale.length ? `<ul class="plan-why">${r.rationale.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}${r.sessions.length ? planRowsHTML(r.sessions) : `<p class="hint">${L('На эту неделю ничего — начнём с понедельника', 'Nothing this week — we start on Monday')}</p>`}
         ${r.base && !same ? `<details class="plan-base"><summary>${L('Обычная неделя', 'Usual week')} <span class="num muted">${fHours(planTotal(r.base))}</span></summary>${planRowsHTML(r.base)}</details>` : ''}
         <p class="hint" style="padding-top:12px">${L('Дальше раз в неделю, в выходные, ассистент предложит следующую неделю — по тому, как прошла эта. Время подберу по календарю.', 'Every weekend the assistant proposes the next week, based on how this one went. Times come from your calendar.')}</p>
         <div class="stack wiz-go"><button class="btn primary" data-a="wiz-accept">${L('Принять план', 'Accept the plan')}</button><button class="btn quiet" data-a="wiz-edit">${L('Изменить ответы', 'Change answers')}</button></div>`;
@@ -1189,7 +1357,7 @@ function wizHTML() {
 async function buildPlan(rules) {
   const t = planTarget();
   wiz.step = 3; wiz.result = null; wiz.error = null;
-  if (rules || !cloud.ai) { wiz.result = rulesPlan(wiz.a, t); return wizRender(); }
+  if (rules || !cloud.ai) { wiz.result = withOutlook(rulesPlan(wiz.a, t), wiz.a); return wizRender(); }
   wiz.busy = true; wiz.hint = ''; wiz.ctrl = new AbortController(); wizRender();
   try {
     wiz.hint = L('Подтягиваю историю Garmin за 12 недель…', 'Pulling 12 weeks of Garmin history…'); wizRender();
@@ -1197,7 +1365,7 @@ async function buildPlan(rules) {
     if (cloud.cals?.length) { wiz.hint = L('Смотрю календарь…', 'Checking your calendar…'); wizRender(); await loadBusy(t.wk); }
     wiz.hint = L('Ассистент думает — обычно до минуты', 'The assistant is thinking — usually under a minute'); wizRender();
     const p = await aiPlan('plan', planContext('plan', t), wiz.ctrl.signal);
-    wiz.result = {...p, by: 'ai', sessions: p.sessions.filter(x => x.day >= t.from), target: t};
+    wiz.result = withOutlook({...p, by: 'ai', sessions: p.sessions.filter(x => x.day >= t.from), target: t}, wiz.a);
   } catch (e) {
     wiz.error = e.name === 'AbortError' ? 'stopped' : !navigator.onLine ? 'network' : (e.message || 'failed');
   } finally { wiz.busy = false; wiz.ctrl = null; wizRender(); }
@@ -1206,7 +1374,7 @@ function acceptPlan() {
   const r = wiz.result; if (!r) return;
   const a = wiz.a, t = r.target;
   const prev = JSON.stringify({plan: state.plan, template: state.template, asks: state.asks, planSkip: state.planSkip || null, prop: state.proposals[t.wk] || null});
-  state.plan = {goal: a.goal, sports: a.sports, days: a.days, hours: a.hours, notes: a.notes, eventDate: a.eventDate, eventName: a.eventName, at: isoNow(), by: r.by, summary: r.summary, rationale: r.rationale, start: t.wk};
+  state.plan = {goal: a.goal, sports: a.sports, days: a.days, hours: a.hours, notes: a.notes, eventDate: a.eventDate, eventName: a.eventName, at: isoNow(), by: r.by, summary: r.summary, rationale: r.rationale, start: t.wk, outlook: r.outlook};
   if (r.base?.length) state.template = r.base.map(x => ({id: 't-' + rid(), kind: x.kind, day: x.day, tod: x.tod, min: x.min, anchor: false, note: '', ...(x.detail ? {detail: x.detail} : {}), ...(x.key ? {key: true} : {})}));
   // The sports were just chosen: no "4 weeks without…" questions about them for a month.
   state.asks = Object.fromEntries(a.sports.map(sp => [sp, {c: 'keep', at: todayStr()}]));
@@ -1297,7 +1465,7 @@ function planCardsHTML(wk) {
 function planSettingsHTML() {
   const p = state.plan;
   let h = `<div class="section-title">${L('План', 'Plan')}</div>`;
-  if (p) h += `<div class="list" style="margin-bottom:12px"><div class="row" style="display:block"><span class="t"><b>${esc(L(GOALS[p.goal]?.[0] || '', GOALS[p.goal]?.[1] || ''))}${p.goal === 'event' && p.eventName ? ' · ' + esc(p.eventName) : ''}</b><span>${esc(p.sports.map(sp => L(SPORTS[sp][0], SPORTS[sp][1])).join(', '))} · ${p.days} ${L('в неделю', 'a week')} · ~${p.hours}${L(' ч', ' h')}</span><span style="color:var(--ink-2)">${esc(p.summary || '')}</span></span></div></div>`;
+  if (p) h += `<div class="list" style="margin-bottom:12px"><div class="row" style="display:block"><span class="t"><b>${esc(L(GOALS[p.goal]?.[0] || '', GOALS[p.goal]?.[1] || ''))}${p.goal === 'event' && p.eventName ? ' · ' + esc(p.eventName) : ''}</b><span>${esc(p.sports.map(sp => L(SPORTS[sp][0], SPORTS[sp][1])).join(', '))} · ${p.days} ${L('в неделю', 'a week')} · ~${p.hours}${L(' ч', ' h')}</span></span></div></div>${p.outlook ? outlookHTML(p.outlook, p.start, p, false) : ''}`;
   else h += `<p class="hint" style="padding-bottom:12px">${L('Плана нет — недели собираются из «Обычной недели» ниже.', 'No plan — weeks come from the usual week below.')}</p>`;
   return h + `<div class="stack" style="margin-bottom:24px"><button class="btn ${p ? 'quiet' : 'primary'}" data-a="plan-open">${p ? L('Собрать план заново', 'Rebuild the plan') : L('Собрать план', 'Build a plan')}</button></div>`;
 }
@@ -1353,6 +1521,8 @@ function weekHTML() {
   h += painLine();
   h += cardsHTML(wk, week);
   h += progressHTML(wk, doneS, ex, doneMin, planMin, L(`${doneS.length + ex.length} из ${counted.length + ex.length} трен.`, `${doneS.length + ex.length} of ${counted.length + ex.length} sessions`));
+  const ow = outlookWeek(wk);
+  if (ow) h += `<p class="plan-phase"><b>${L(PHASE[ow.phase][0], PHASE[ow.phase][1])}</b> · ${L(`неделя ${ow.week} из ${ow.of}`, `week ${ow.week} of ${ow.of}`)} · ${L('ориентир', 'target')} ${fH(ow.hours)}</p>`;
   if (week.planNote) h += `<p class="plan-note"><span>${week.planBy === 'rules' ? L('План', 'Plan') : L('Идея недели', 'This week')}</span> ${esc(week.planNote)}</p>`;
   h += weekListHTML(wk, week, effs, ti);
   const un = unplacedAll(week);
@@ -1907,6 +2077,7 @@ async function icsFile(file) {
 
 /* ---------- events ---------- */
 document.addEventListener('click', ev => {
+  const olc = ev.target.closest('.ol-col'); if (olc) return olShow(olc);
   const el = ev.target.closest('[data-a]'); if (!el) return;
   const a = el.dataset.a, wk = view.wk;
   if (a === 'close-sheet') return closeSheet();
@@ -2088,7 +2259,7 @@ document.addEventListener('input', ev => { if (ev.target.id === 'chatInput') gro
 document.addEventListener('pointerdown', ev => { if (ev.target.closest('.chip')) ev.preventDefault(); });
 
 // Debug hook for local testing (busy/acts injection); harmless in production.
-window.trainDebug = {get state() { return state; }, get cloud() { return cloud; }, openChat, chatContext, openWizard, wiz, rulesPlan, applyWeekPlan, makeWeekly, maybeWeekly, weeklyDue, planContext, proposalSheet, view, run, parse, onBusy, matchActs, render, persist, place, setBusy(wk, events) { state.local.busy[wk] = {at: Date.now(), events}; saveLocal(); onBusy(wk); }, setActs(list) { state.local.acts = {at: Date.now(), list, linked: true}; saveLocal(); for (const wk of Object.keys(state.weeks)) { const week = state.weeks[wk], before = snapshot(week), lines = matchActs(wk, week); if (lines.length) commit(wk, week, before, 'Garmin', lines); } render(); }};
+window.trainDebug = {get state() { return state; }, get cloud() { return cloud; }, openChat, chatContext, openWizard, wiz, rulesPlan, projectOutlook, outlookWeek, buildPlan, applyWeekPlan, makeWeekly, maybeWeekly, weeklyDue, planContext, proposalSheet, view, run, parse, onBusy, matchActs, render, persist, place, setBusy(wk, events) { state.local.busy[wk] = {at: Date.now(), events}; saveLocal(); onBusy(wk); }, setActs(list) { state.local.acts = {at: Date.now(), list, linked: true}; saveLocal(); for (const wk of Object.keys(state.weeks)) { const week = state.weeks[wk], before = snapshot(week), lines = matchActs(wk, week); if (lines.length) commit(wk, week, before, 'Garmin', lines); } render(); }};
 
 // Back from Google's consent screen: #google=ok or #google=<reason>.
 const googleBack = (location.hash.match(/google=([\w-]+)/) || [])[1];
