@@ -11,6 +11,7 @@ const L = (ru, en) => lang === 'ru' ? ru : en;
 const DAYS = () => L(['пн', 'вт', 'ср', 'чт', 'пт', 'сб', 'вс'], ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']);
 const ICON = {
   left: '<path d="m15 18-6-6 6-6"/>', right: '<path d="m9 18 6-6-6-6"/>', up: '<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>',
+  chat: '<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20.5l1.4-5A8 8 0 1 1 21 12Z"/>',
 };
 const icon = (n, size = 20) => `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[n]}</svg>`;
 const MONTHS_RU = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
@@ -83,6 +84,8 @@ function load() {
   d.weeks = d.weeks || {};
   d.checks = d.checks || {};
   d.asks = d.asks || {};
+  d.chat = Array.isArray(d.chat) ? d.chat : [];
+  for (const m of d.chat) if (m.pending) { m.pending = false; if (!m.text && !m.actions) m.error = 'failed'; }
   d.local = d.local || {busy: {}, acts: null};
   return d;
 }
@@ -366,6 +369,7 @@ function commit(wk, week, before, text, lines, opts = {}) {
   week.log.unshift({at: new Date().toISOString(), text, lines: all, snap: before});
   week.log = week.log.slice(0, 30);
   persist();
+  if (capture) { capture.push(...all); return; }
   if (!opts.silent) lastChange = {wk, text, lines: all};
   render();
 }
@@ -589,7 +593,7 @@ function run(text) {
       return reply(text, [L('Пока понимаю: «перенеси бег на чт», «пропустил», «сегодня 30 минут», «болею», «уезжаю пт–вс», «сделал», «добавь вел в пт», «пересобери», «отмени»', 'I understand: “move run to Thu”, “skipped”, “30 minutes today”, “sick”, “away Fri–Sun”, “done”, “add ride Fri”, “replan”, “undo”')]);
   }
 }
-function reply(text, lines) { lastChange = {wk: view.wk, text, lines, info: true}; render(); }
+function reply(text, lines) { if (capture) { capture.push(...lines); return; } lastChange = {wk: view.wk, text, lines, info: true}; render(); }
 function undo(wk) {
   const week = state.weeks[wk], e = week?.log?.[0];
   if (!e) { reply('', [L('Отменять нечего', 'Nothing to undo')]); return; }
@@ -618,7 +622,7 @@ async function sync() {
       const local = state.local;
       state = {...row.data, local, syncedAt: row.updated_at, syncedUser: uid, dirty: false};
       state.prefs = {...DEFAULT_PREFS, ...(state.prefs || {})};
-      state.weeks = state.weeks || {}; state.checks = state.checks || {}; state.asks = state.asks || {}; state.template = state.template || DEFAULT_TEMPLATE.map(x => ({...x}));
+      state.weeks = state.weeks || {}; state.checks = state.checks || {}; state.asks = state.asks || {}; state.chat = Array.isArray(state.chat) ? state.chat : []; state.template = state.template || DEFAULT_TEMPLATE.map(x => ({...x}));
       saveLocal(); render();
     } else if (state.dirty || !row) {
       const sent = rev;
@@ -722,6 +726,7 @@ async function afterSignIn() {
   await sync();
   const st = await fn('cal-status'); if (!st.error) { cloud.cals = st.calendars; cloud.google = st.google; }
   render();
+  aiStatus();
   if (cloud.cals?.length) await loadBusy(view.wk);
   await loadActs();
 }
@@ -736,6 +741,220 @@ function acctStatus() {
   return '';
 }
 
+/* ---------- AI assistant (train-chat function, Claude) ---------- */
+// The chat lives in state.chat (synced). The model only proposes plan changes as app commands;
+// they run through the same planner as the command bar, and only when the person taps «Применить».
+const chat = {busy: false, ctrl: null};
+let capture = null; // while applying a proposal, commit() and reply() collect lines here instead of rendering
+async function aiStatus() {
+  try { const {data, error} = await cloud.client.functions.invoke('train-chat', {body: {action: 'status'}}); cloud.ai = !error && !!data?.ai; }
+  catch { cloud.ai = false; }
+  render();
+}
+const isoNow = () => new Date().toISOString();
+// What the assistant sees about the app right now: the visible week, pain, Garmin, template. No calendar titles.
+function chatContext(focus) {
+  const wk = view.wk, week = state.weeks[wk], ti = todayIdx(wk), g = gate(), now = new Date(), cur = ymd(mondayOf(now));
+  const sess = (s, wk = view.wk) => {
+    const e = effective(wk, s), o = {day: e.day != null ? DAYS_RU[e.day] : 'не влезло', kind: KINDS[e.kind].ru, min: e.short || e.min, status: e.status};
+    if (e.day != null && e.start != null && e.status === 'planned') o.start = hm(e.start);
+    if (e.was) o.planned_as = KINDS[e.was].ru;
+    if (e.why && whyLoud(e.why)) o.why = whyText(e.why);
+    if (e.caution) o.caution = e.caution;
+    if (s.act) o.garmin = {min: s.act.min, km: s.act.km};
+    if (s.locked) o.pinned = true;
+    return o;
+  };
+  const busy = week ? [0, 1, 2, 3, 4, 5, 6].map(i => ({day: DAYS_RU[i], busy: blocks(wk, i).map(b => `${hm(b.s)}–${hm(b.e)}${b.work ? ' работа' : ''}`)})).filter(x => x.busy.length) : [];
+  const acts = state.local.acts?.list || [], since = ymd(addDays(now, -21));
+  const recent = acts.filter(a => a.start.slice(0, 10) >= since).map(a => ({date: a.start.slice(0, 16).replace('T', ' '), sport: a.sport, type: a.type, name: a.name, min: a.min, km: a.km || undefined, elev: a.elev || undefined, hr: a.hr || undefined, np: a.np || undefined, load: a.load || undefined, hr_zone_min: a.hrz?.some(Boolean) ? a.hrz.map(x => Math.round(x / 60)) : undefined}));
+  const weeks = {};
+  for (const a of acts) {
+    if (!trainingSport(a.sport)) continue;
+    const w = ymd(mondayOf(parseYmd(a.start.slice(0, 10))));
+    if (w < ymd(addDays(mondayOf(now), -7 * 8))) continue;
+    (weeks[w] = weeks[w] || {})[a.sport] = Math.round(((weeks[w][a.sport] || 0) + a.min / 60) * 10) / 10;
+  }
+  const checks = Object.keys(state.checks).filter(d => d >= ymd(addDays(now, -14))).sort().map(d => ({date: d, sit: state.checks[d].sit, walk: state.checks[d].walk, rest_or_night_pain: !!state.checks[d].rest}));
+  return {
+    today: {date: todayStr(), weekday: DAYS_RU[(now.getDay() + 6) % 7], time: hm(nowMin())},
+    plan_week: {monday: wk, relation: ti < 0 ? 'будущая' : ti > 6 ? 'прошедшая' : 'текущая', sessions: week ? week.sessions.map(s => sess(s)) : [], away: week?.away || [], sick: week?.sick || [], calendar_busy: busy, recent_changes: (week?.log || []).slice(0, 5).map(e => ({text: e.text, lines: e.lines}))},
+    pain: {checks, gate: g.known ? {max_today: g.max, stop: g.stop, see_doctor: g.doctor, bike_ok: g.bikeOk, run_ok_today: g.runOkOn(todayStr())} : 'нет свежей отметки', user_rule: 'бег только после 48 ч на 0/10, включая сидение; вел — если сидя 0/10'},
+    garmin: {linked: !!state.local.acts?.linked, recent_21d: recent, hours_by_week: weeks},
+    template: state.template.map(t => ({day: DAYS_RU[t.day], kind: KINDS[t.kind].ru, min: t.min, tod: t.tod, anchor: t.anchor})),
+    sport_answers: state.asks,
+    ...(cur !== wk && state.weeks[cur] ? {current_week: {monday: cur, note: 'неделя, которая идёт сейчас; правки предлагаются для plan_week', sessions: state.weeks[cur].sessions.map(s => sess(s, cur))}} : {}),
+    ...(focus ? {focus} : {}),
+  };
+}
+// One workout in detail, for «Обсудить с ассистентом» from the workout sheet.
+function actFocus(id) {
+  const base = (state.local.acts?.list || []).find(a => a.id === id) || null, d = actCached(id);
+  if (!d?.summary) return base ? {workout: base} : null;
+  const S = d.summary, keep = {};
+  for (const [k, v] of Object.entries(S)) if (v != null && v !== '') keep[k] = v;
+  const an = analyse(d, base, null);
+  return {workout: {...keep, dur_min: S.dur ? Math.round(S.dur / 60) : undefined, dist_km: S.dist ? Math.round(S.dist / 100) / 10 : undefined, hr_zone_min: base?.hrz?.map(x => Math.round(x / 60)), load: base?.load, verdicts: an.verdicts.map(v => `${v.head} ${v.text}`), best: an.best.map(b => b.join(': '))}};
+}
+function md(t) {
+  const inl = s => esc(s).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/(^|[^*\w])\*([^*\n]+)\*(?!\w)/g, '$1<i>$2</i>');
+  const out = []; let list = null;
+  for (const raw of String(t || '').split('\n')) {
+    const line = raw.trimEnd(), m = line.match(/^\s*(?:[-*•]|(\d+)[.)])\s+(.*)$/);
+    if (m) {
+      const tag = m[1] ? 'ol' : 'ul';
+      if (list !== tag) { if (list) out.push(`</${list}>`); list = tag; out.push(`<${tag}>`); }
+      out.push(`<li>${inl(m[2])}</li>`); continue;
+    }
+    if (list) { out.push(`</${list}>`); list = null; }
+    if (!line.trim()) continue;
+    const hd = line.match(/^#{1,4}\s+(.*)$/);
+    out.push(hd ? `<p><b>${inl(hd[1])}</b></p>` : `<p>${inl(line)}</p>`);
+  }
+  if (list) out.push(`</${list}>`);
+  return out.join('');
+}
+const chatErr = e => ({
+  ai_not_configured: L('Ассистент ещё не настроен на сервере', 'The assistant isn’t set up on the server yet'),
+  rate_limited: L('Слишком много запросов — попробуй через минуту', 'Too many requests — try again in a minute'),
+  bad_key: L('Сервер не смог авторизоваться у модели', 'The server couldn’t authenticate with the model'),
+  unreachable: L('Не достучался до модели — попробуй ещё раз', 'Couldn’t reach the model — try again'),
+  too_long: L('Ответ вышел слишком длинным — спроси уже', 'The answer ran too long — ask something narrower'),
+  refusal: L('На это ответить не могу', 'I can’t help with that one'),
+  network: L('Нет сети', 'You’re offline'), unauthorized: L('Войди заново в настройках', 'Sign in again in Settings'),
+  stopped: L('Остановлено', 'Stopped'),
+}[e] || L('Не получилось — попробуй ещё раз', 'That didn’t work — try again'));
+function msgHTML(m) {
+  if (m.role === 'user') return `<div class="msg me"><div class="bubble">${esc(m.text)}</div></div>`;
+  let h = `<div class="msg ai" data-mid="${m.id}"><div class="md">${md(m.text)}</div>`;
+  if (m.pending && !m.text) h += `<div class="typing" aria-label="${L('Думаю', 'Thinking')}"><i></i><i></i><i></i></div>`;
+  const p = m.actions;
+  if (p) {
+    h += `<div class="proposal"><b>${esc(p.summary)}</b>`;
+    if (p.applied) h += `<ul>${p.applied.map(l => `<li>${esc(l)}</li>`).join('')}</ul><p class="muted">${L('Применено — отменить можно на экране недели', 'Applied — undo it on the week screen')}</p>`;
+    else h += `<ul class="cmds">${p.commands.map(c => `<li>${esc(c)}</li>`).join('')}</ul>${m.pending ? '' : `<button class="btn sm primary" data-a="chat-apply" data-mid="${m.id}">${L('Применить', 'Apply')}</button>`}`;
+    h += '</div>';
+  }
+  if (m.error) h += `<p class="chat-err">${esc(chatErr(m.error))}${m.error !== 'refusal' && m.error !== 'stopped' ? ` <button class="nav-btn link" data-a="chat-retry">${L('Повторить', 'Retry')}</button>` : ''}</p>`;
+  return h + '</div>';
+}
+function chatSheetHTML() {
+  const msgs = state.chat;
+  const starters = lang === 'ru' ? ['Как идёт неделя?', 'Что сегодня и как это сделать?', 'Разбери последнюю тренировку', 'Неделя забита — что оставить?'] : ['How is the week going?', 'What’s today and how do I do it?', 'Review my last workout', 'Busy week — what should I keep?'];
+  const body = msgs.length ? msgs.map(msgHTML).join('')
+    : `<div class="chat-empty"><p>${L('Спроси про тренировки, боль, восстановление — или попроси переставить неделю. Изменения применяешь ты.', 'Ask about training, pain or recovery — or ask to rearrange the week. You apply any changes.')}</p><div class="starters">${starters.map(s => `<button class="starter" data-a="chat-starter" data-t="${esc(s)}">${esc(s)}</button>`).join('')}</div></div>`;
+  return `<div class="sheet-head"><h2>${L('Ассистент', 'Assistant')}</h2><span class="sheet-acts">${msgs.length ? `<button class="nav-btn" data-a="chat-new">${L('Новый', 'New')}</button>` : ''}<button class="nav-btn strong" data-a="close-sheet">${L('Готово', 'Done')}</button></span></div>
+    <div class="sheet-scroll chat-log" id="chatLog">${body}</div>
+    <form id="chatForm" class="chat-compose" autocomplete="off"><textarea id="chatInput" rows="1" enterkeyhint="send" placeholder="${L('Спроси ассистента', 'Ask the assistant')}"></textarea>${chat.busy
+      ? `<button class="send stop" type="button" data-a="chat-stop" aria-label="${L('Остановить', 'Stop')}"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2" fill="currentColor"/></svg></button>`
+      : `<button class="send" type="submit" aria-label="${L('Отправить', 'Send')}">${icon('up')}</button>`}</form>`;
+}
+const chatLogEl = () => document.getElementById('chatLog');
+function chatScroll(force) { const el = chatLogEl(); if (el && (force || el.scrollHeight - el.scrollTop - el.clientHeight < 120)) el.scrollTop = el.scrollHeight; }
+function chatRender(forceScroll) {
+  if (!sheetCtx?.chat) return;
+  const inp = $('#chatInput'), v = inp?.value || '', had = document.activeElement === inp;
+  $('#sheetPanel').innerHTML = chatSheetHTML();
+  const n = $('#chatInput'); n.value = v; growInput(n); if (had) n.focus();
+  chatScroll(forceScroll);
+}
+function growInput(el) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 140) + 'px'; }
+function openChat(text, focus) {
+  openSheet(chatSheetHTML(), {chat: true});
+  chatScroll(true);
+  if (text) sendChat(text, focus);
+}
+// The conversation as the API wants it: text only, alternating, a proposal summarised into its message.
+function chatHistory() {
+  const out = [];
+  for (const m of state.chat) {
+    if (m.pending) continue;
+    let text = m.text || '';
+    if (m.role === 'assistant' && m.actions) text += `\n\n[Карточка: ${m.actions.summary}. Команды: ${m.actions.commands.join('; ')}. ${m.actions.applied ? 'Пользователь применил.' : 'Не применено.'}]`;
+    if (m.role === 'assistant' && m.error && !text) continue;
+    if (!text.trim()) continue;
+    const last = out[out.length - 1];
+    if (last && last.role === m.role) last.text += '\n\n' + text; else out.push({role: m.role, text});
+  }
+  while (out.length && out[0].role !== 'user') out.shift();
+  return out.slice(-20);
+}
+async function sendChat(text, focus) {
+  text = String(text || '').trim();
+  if (!text || chat.busy) return;
+  if (!cloud.user) { toast(L('Войди в настройках — ассистент работает с аккаунтом', 'Sign in under Settings to use the assistant')); return; }
+  state.chat.push({id: rid(), role: 'user', text, at: isoNow(), ...(focus ? {focus} : {})});
+  const msg = {id: rid(), role: 'assistant', text: '', at: isoNow(), pending: true};
+  state.chat.push(msg);
+  state.chat = state.chat.slice(-40);
+  chat.busy = true; chat.ctrl = new AbortController();
+  chatRender(true);
+  const paint = () => { const el = document.querySelector(`[data-mid="${msg.id}"] .md`); if (el) { el.innerHTML = md(msg.text); el.parentElement.querySelector('.typing')?.remove(); chatScroll(); } };
+  try {
+    const {data} = await cloud.client.auth.getSession();
+    const res = await fetch(`${CFG.supabaseUrl}/functions/v1/train-chat`, {
+      method: 'POST', signal: chat.ctrl.signal,
+      headers: {'Content-Type': 'application/json', apikey: CFG.supabaseKey, Authorization: `Bearer ${data.session?.access_token || ''}`},
+      body: JSON.stringify({messages: chatHistory(), context: chatContext(focus ? actFocus(focus.act) : null)}),
+    });
+    if (!res.ok) { let b = null; try { b = await res.json(); } catch {} throw new Error(b?.error || (res.status === 401 ? 'unauthorized' : 'failed')); }
+    const reader = res.body.getReader(), dec = new TextDecoder();
+    let buf = '';
+    for (;;) {
+      const {value, done} = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, {stream: true});
+      let i;
+      while ((i = buf.indexOf('\n\n')) >= 0) {
+        const line = buf.slice(0, i).split('\n').find(l => l.startsWith('data: '));
+        buf = buf.slice(i + 2);
+        if (!line) continue;
+        let ev; try { ev = JSON.parse(line.slice(6)); } catch { continue; }
+        if (ev.t === 'text') { msg.text += ev.d; paint(); }
+        else if (ev.t === 'actions') msg.actions = {summary: ev.summary, commands: ev.commands, wk: view.wk};
+        else if (ev.t === 'refusal') msg.error = 'refusal';
+        else if (ev.t === 'error') msg.error = ev.e;
+      }
+    }
+    if (!msg.text && !msg.actions && !msg.error) msg.error = 'failed';
+  } catch (e) {
+    msg.error = e.name === 'AbortError' ? 'stopped' : !navigator.onLine ? 'network' : (e.message || 'failed');
+  } finally {
+    msg.pending = false; chat.busy = false; chat.ctrl = null;
+    if (!state.chat.includes(msg)) state.chat.push(msg); // a sync replaced the state mid-answer
+    persist(); chatRender();
+  }
+}
+function chatRetry() {
+  if (chat.busy) return;
+  let i = state.chat.length - 1;
+  while (i >= 0 && state.chat[i].role !== 'user') i--;
+  if (i < 0) return;
+  const u = state.chat[i];
+  state.chat.splice(i);
+  sendChat(u.text, u.focus);
+}
+// Runs the proposal's commands as one change: one entry in the change history, one undo.
+function applyProposal(id) {
+  const m = state.chat.find(x => x.id === id), p = m?.actions;
+  if (!p || p.applied) return;
+  const wk = p.wk || view.wk;
+  view.v = 'week'; view.wk = wk;
+  const week = ensureWeek(wk);
+  if (!week) { toast(L('Эта неделя уже прошла', 'This week is over')); return; }
+  const top = week.log[0], out = [];
+  capture = out;
+  try { for (const c of p.commands) run(c); } finally { capture = null; }
+  const n = top ? week.log.indexOf(top) : week.log.length;
+  if (n > 1) {
+    const es = week.log.splice(0, n);
+    week.log.unshift({at: es[0].at, text: L('ассистент: ', 'assistant: ') + p.summary, lines: es.slice().reverse().flatMap(e => e.lines), snap: es[es.length - 1].snap});
+  } else if (n === 1) week.log[0].text = L('ассистент: ', 'assistant: ') + p.summary;
+  p.applied = out.length ? out : [L('План не изменился', 'The plan didn’t change')];
+  lastChange = {wk, text: L('ассистент', 'assistant'), lines: p.applied, ...(n ? {} : {info: true})};
+  persist(); render(); chatRender();
+}
+
 /* ---------- view ---------- */
 const view = {v: 'week', wk: ymd(mondayOf(new Date()))};
 if (new Date().getDay() === 0) view.wk = ymd(addDays(parseYmd(view.wk), 7)); // on Sunday, look ahead
@@ -746,7 +965,7 @@ function render() {
   const app = $('#app');
   app.innerHTML = view.v === 'settings' ? settingsHTML() : weekHTML();
   $('#cmd').hidden = view.v !== 'week';
-  $('#cmdInput').placeholder = L('Что поменялось? «перенеси бег на чт»', 'What changed? “move run to Thu”');
+  $('#cmdInput').placeholder = cloud.ai ? L('Что поменялось — или спроси', 'What changed — or ask') : L('Что поменялось? «перенеси бег на чт»', 'What changed? “move run to Thu”');
   renderChips();
   document.documentElement.lang = lang;
 }
@@ -760,7 +979,7 @@ function weekHTML() {
   const sub = weekTitle(wk) + (ti >= 0 && ti <= 6 ? L(' · эта неделя', ' · this week') : ti < 0 ? (ti >= -7 ? L(' · следующая', ' · next week') : '') : '');
   let h = `<main class="screen"><header class="nav"><div class="nav-row">
     <span class="weeknav"><button class="nav-btn icon-btn" data-a="wk" data-d="-7" aria-label="${L('Прошлая неделя', 'Previous week')}">${icon('left')}</button><button class="nav-btn icon-btn" data-a="wk" data-d="7" aria-label="${L('Следующая неделя', 'Next week')}">${icon('right')}</button>${ti < 0 || ti > 6 ? `<button class="nav-btn link" data-a="wk-today">${L('Сегодня', 'Today')}</button>` : ''}</span>
-    <button class="nav-btn" data-a="settings">${L('Настройки', 'Settings')}</button></div>
+    <span class="nav-right">${cloud.ai ? `<button class="nav-btn icon-btn" data-a="chat" aria-label="${L('Ассистент', 'Assistant')}">${icon('chat', 22)}</button>` : ''}<button class="nav-btn" data-a="settings">${L('Настройки', 'Settings')}</button></span></div>
     <h1>${L('Неделя', 'Week')}<span class="sub">${esc(sub)}</span></h1></header>`;
   if (lastChange && lastChange.wk === wk) {
     h += `<section class="card change"><div class="card-head"><h3>${lastChange.info ? L('Ответ', 'Reply') : L('Что поменялось', 'What changed')}</h3>${!lastChange.info ? `<button class="nav-btn link" data-a="undo">${L('Отменить', 'Undo')}</button>` : `<button class="nav-btn link" data-a="dismiss">${L('Ок', 'OK')}</button>`}</div>
@@ -951,7 +1170,7 @@ const pct = m => Math.max(0, Math.min(100, (m - TL_FROM) / (TL_TO - TL_FROM) * 1
 
 /* ---------- sheets ---------- */
 let sheetCtx = null;
-function openSheet(html, ctx) { sheetCtx = ctx || null; $('#sheetPanel').innerHTML = html; $('#sheet').hidden = false; }
+function openSheet(html, ctx) { sheetCtx = ctx || null; $('#sheetPanel').className = 'sheet-panel' + (ctx?.chat ? ' chat' : ''); $('#sheetPanel').innerHTML = html; $('#sheet').hidden = false; }
 function closeSheet() { $('#sheet').hidden = true; sheetCtx = null; }
 /* ---------- one workout: summary, zones, charts ---------- */
 const actMem = new Map();
@@ -1197,6 +1416,7 @@ function activityHTML(base, d, plan, sid, loading, error) {
     const sp2 = runSplits(d.series);
     if (sp2.length) h += `<div class="section-title">${L('Километры', 'Splits')}</div><table class="splits num"><thead><tr><th>${L('км', 'km')}</th><th>${L('Темп', 'Pace')}</th><th>${L('Пульс', 'HR')}</th></tr></thead><tbody>${sp2.map(r => `<tr><td>${r.km}</td><td>${fPace(r.sec)}</td><td>${r.hr ?? '—'}</td></tr>`).join('')}</tbody></table>`;
   }
+  if (cloud.ai && base?.id) h += `<div class="stack" style="padding-top:20px"><button class="btn quiet" data-a="chat-act" data-id="${base.id}">${icon('chat', 18)}${L('Обсудить с ассистентом', 'Discuss with the assistant')}</button></div>`;
   if (sid) h += `<div class="stack" style="padding-top:20px"><button class="btn quiet" data-a="mark" data-id="${sid}" data-st="planned">${L('Не засчитывать — вернуть в план', 'Don’t count it — back to plan')}</button></div>`;
   return h + '</div>';
 }
@@ -1340,6 +1560,13 @@ document.addEventListener('click', ev => {
   const el = ev.target.closest('[data-a]'); if (!el) return;
   const a = el.dataset.a, wk = view.wk;
   if (a === 'close-sheet') return closeSheet();
+  if (a === 'chat') return openChat();
+  if (a === 'chat-starter') return sendChat(el.dataset.t);
+  if (a === 'chat-new') { chat.ctrl?.abort(); state.chat = []; persist(); return chatRender(); }
+  if (a === 'chat-stop') { chat.ctrl?.abort(); return; }
+  if (a === 'chat-retry') return chatRetry();
+  if (a === 'chat-apply') return applyProposal(el.dataset.mid);
+  if (a === 'chat-act') { const id = Number(el.dataset.id), b = (state.local.acts?.list || []).find(x => x.id === id); return openChat(L(`Разбери тренировку: ${b?.name || 'эта'}, ${(b?.start || '').slice(0, 10)}`, `Review this workout: ${b?.name || ''}, ${(b?.start || '').slice(0, 10)}`), {act: id}); }
   if (a === 'chip') { const inp = $('#cmdInput'); inp.value = el.dataset.t; inp.focus(); return; }
   if (a === 'wk') { view.wk = ymd(addDays(parseYmd(wk), +el.dataset.d)); lastChange = null; render(); if (cloud.user && cloud.cals?.length && todayIdx(view.wk) <= 6) loadBusy(view.wk); ensureHistory(view.wk); return; }
   if (a === 'wk-today') { view.wk = ymd(mondayOf(new Date())); render(); return; }
@@ -1407,7 +1634,7 @@ document.addEventListener('click', ev => {
     persist(); render(); return;
   }
   if (a === 'lang') { lang = el.dataset.l; try { localStorage.setItem('train.lang', lang); } catch {} render(); return; }
-  if (a === 'sign-out') { cloud.client.auth.signOut(); cloud.user = null; cloud.cals = null; render(); return; }
+  if (a === 'sign-out') { cloud.client.auth.signOut(); cloud.user = null; cloud.cals = null; cloud.ai = false; render(); return; }
   if (a === 'history') {
     const from = ymd(addDays(new Date(), -365)), to = state.local.acts?.from || todayStr();
     if (to <= from) { toast(L('Год истории уже загружен', 'A year of history is already here')); return; }
@@ -1469,16 +1696,27 @@ document.addEventListener('change', ev => {
 });
 document.addEventListener('submit', ev => {
   ev.preventDefault();
-  if (ev.target.id === 'cmd') { const inp = $('#cmdInput'), v = inp.value.trim(); if (!v) return; inp.value = ''; inp.blur(); run(v); scrollTo({top: 0, behavior: 'smooth'}); }
+  if (ev.target.id === 'cmd') {
+    const inp = $('#cmdInput'), v = inp.value.trim(); if (!v) return; inp.value = ''; inp.blur();
+    // Plain commands go to the planner; anything it doesn't understand, or a question, goes to the assistant.
+    if (cloud.ai && (/\?\s*$/.test(v) || !parse(v, view.wk).intent)) return openChat(v);
+    run(v); scrollTo({top: 0, behavior: 'smooth'});
+  }
+  if (ev.target.id === 'chatForm') { const inp = $('#chatInput'), v = inp.value.trim(); if (!v || chat.busy) return; inp.value = ''; growInput(inp); sendChat(v); }
   if (ev.target.id === 'authForm') authSubmit();
   if (ev.target.id === 'calForm') calAdd();
 });
-document.addEventListener('keydown', ev => { if (ev.key === 'Escape' && !$('#sheet').hidden) closeSheet(); });
+document.addEventListener('keydown', ev => {
+  if (ev.key === 'Escape' && !$('#sheet').hidden) closeSheet();
+  // In the chat, Enter sends and Shift+Enter breaks the line.
+  if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing && ev.target.id === 'chatInput') { ev.preventDefault(); $('#chatForm').requestSubmit(); }
+});
+document.addEventListener('input', ev => { if (ev.target.id === 'chatInput') growInput(ev.target); });
 // A chip fills the field without taking focus from it, so the chips row stays open.
 document.addEventListener('pointerdown', ev => { if (ev.target.closest('.chip')) ev.preventDefault(); });
 
 // Debug hook for local testing (busy/acts injection); harmless in production.
-window.trainDebug = {get state() { return state; }, view, run, parse, onBusy, matchActs, render, persist, place, setBusy(wk, events) { state.local.busy[wk] = {at: Date.now(), events}; saveLocal(); onBusy(wk); }, setActs(list) { state.local.acts = {at: Date.now(), list, linked: true}; saveLocal(); for (const wk of Object.keys(state.weeks)) { const week = state.weeks[wk], before = snapshot(week), lines = matchActs(wk, week); if (lines.length) commit(wk, week, before, 'Garmin', lines); } render(); }};
+window.trainDebug = {get state() { return state; }, get cloud() { return cloud; }, openChat, chatContext, view, run, parse, onBusy, matchActs, render, persist, place, setBusy(wk, events) { state.local.busy[wk] = {at: Date.now(), events}; saveLocal(); onBusy(wk); }, setActs(list) { state.local.acts = {at: Date.now(), list, linked: true}; saveLocal(); for (const wk of Object.keys(state.weeks)) { const week = state.weeks[wk], before = snapshot(week), lines = matchActs(wk, week); if (lines.length) commit(wk, week, before, 'Garmin', lines); } render(); }};
 
 // Back from Google's consent screen: #google=ok or #google=<reason>.
 const googleBack = (location.hash.match(/google=([\w-]+)/) || [])[1];
