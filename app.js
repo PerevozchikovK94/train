@@ -136,6 +136,7 @@ function allDayEvents(wk, i) {
 function blocks(wk, i) {
   const p = state.prefs, out = dayEvents(wk, i).filter(e => !e.free);
   if (p.work && i < 5) out.push({s: toMin(p.workStart), e: toMin(p.workEnd), title: L('Работа', 'Work'), work: true});
+  for (const b of p.blocks || []) if (b.days.includes(i) && toMin(b.to) > toMin(b.from)) out.push({s: toMin(b.from), e: toMin(b.to), title: b.label || L('Защищённое время', 'Protected time'), own: true});
   return out;
 }
 // Free windows [start, end] in minutes for day i, after work hours, calendar, buffers and "now".
@@ -146,7 +147,7 @@ function windows(wk, i, week) {
   if (i === ti) s = Math.max(s, Math.ceil((nowMin() + 15) / 15) * 15);
   let wins = [[s, e]];
   for (const b of blocks(wk, i)) {
-    const bs = b.s - (b.work ? 0 : p.buffer), be = b.e + (b.work ? 15 : p.buffer);
+    const bs = b.s - (b.work || b.own ? 0 : p.buffer), be = b.e + (b.work ? 15 : b.own ? 0 : p.buffer);
     wins = wins.flatMap(([a, z]) => be <= a || bs >= z ? [[a, z]] : [[a, bs], [be, z]].filter(([x, y]) => y - x >= 20));
   }
   return wins.filter(([a, z]) => z - a >= 20);
@@ -184,7 +185,7 @@ const reasonText = (r, d) => ({
   busyDay: L(`в ${d} уже есть тренировка`, `${d} already has a session`),
   hardRow: L('две тяжёлые подряд', 'two hard days in a row'),
   gymBefore: L('ноги в зале за день до тяжёлой', 'leg day right before a hard one'),
-  runRow: L('бег два дня подряд — бережём таз', 'running two days in a row — easy on impact'),
+  runRow: L('бег два дня подряд — меньше ударной нагрузки', 'running two days in a row — easy on impact'),
   past: L(`${d} уже прошёл`, `${d} is over`),
   away: L(`${d} — поездка`, `${d} — away`),
   weekend: L('длинная — только в выходные', 'long ones are weekend-only'),
@@ -266,6 +267,133 @@ function place(wk, week, opts = {}) {
   for (const s of week.sessions) { delete s._from; delete s._start; }
 }
 
+/* ---------- safety rules the planner applies, not just shows ---------- */
+// Rule 69 (HARD): no run longer than the longest of the last 30 days + 10%. Rule 71: a week's planned time within +20%
+// of the 4 finished weeks before it; after a break (state.resume), rule 34's step back. Sessions the person locked
+// (added or moved by hand) are counted but never cut. Easy volume is cut first, key sessions last (rule 31).
+const RAMP = days => days <= 7 ? null : days <= 14 ? [0.9] : days <= 28 ? [0.7, 0.85] : [0.6, 0.7, 0.8, 0.9];
+function rampFor(wk) {
+  const r = state.resume; if (!r) return null;
+  const steps = RAMP(r.days); if (!steps) return null;
+  const i = weeksFrom(ymd(mondayOf(parseYmd(r.at))), wk);
+  return i >= 0 && i < steps.length ? {factor: steps[i], week: i + 1, of: steps.length, easyOnly: i === 0 && r.days > 7} : null;
+}
+function guard(wk, week) {
+  const ti = todayIdx(wk), D = DAYS(), lines = [];
+  const ahead = week.sessions.filter(s => s.status === 'planned' && (s.day == null || s.day >= ti) && !s.locked);
+  // Coming back after a break: the first week of the ramp is easy only.
+  const ramp = rampFor(wk);
+  if (ramp?.easyOnly) for (const s of ahead) if (KINDS[s.kind].hard) {
+    const old = s.kind; s.kind = KINDS[s.kind].sport === 'run' ? 'run_easy' : 'bike_easy'; delete s.detail; s.key = false;
+    lines.push(L(`${kName(old)} → ${kName(s.kind).toLowerCase()}: первая неделя после паузы — без интенсивности (правило 34)`, `${kName(old)} → ${kName(s.kind).toLowerCase()}: first week back — no intensity (rule 34)`));
+  }
+  // Rule 69: the run cap from Garmin.
+  const lr = longestRun30();
+  if (lr >= 15) {
+    const cap = Math.max(20, Math.floor(lr * 1.1 / 5) * 5);
+    for (const s of ahead) if (KINDS[s.kind].sport === 'run' && s.min > cap) {
+      lines.push(L(`${kName(s.kind)}${s.day != null ? ' (' + D[s.day] + ')' : ''}: ${fDur(s.min)} → ${fDur(cap)} — не длиннее самой длинной пробежки за 30 дней (${fDur(lr)}) +10% (правило 69)`, `${kName(s.kind)}${s.day != null ? ' (' + D[s.day] + ')' : ''}: ${fDur(s.min)} → ${fDur(cap)} — no longer than your longest run in 30 days (${fDur(lr)}) + 10% (rule 69)`));
+      s.min = cap; s.capNote = L(`Ограничено правилом 69: самая длинная пробежка за 30 дней — ${fDur(lr)}`, `Capped by rule 69: longest run in 30 days was ${fDur(lr)}`);
+    }
+  }
+  // Rule 71 (and the ramp): the week's time against the 4 finished weeks before it.
+  const cur = ymd(mondayOf(new Date())), ref = wk < cur ? wk : cur, from = state.local.acts?.from;
+  if (from && from <= ymd(addDays(parseYmd(ref), -28))) {
+    const avg = [1, 2, 3, 4].reduce((t, k) => t + actualHours(ymd(addDays(parseYmd(ref), -7 * k))), 0) / 4;
+    if (avg >= 0.5) {
+      const capMin = Math.round(avg * 60 * (ramp ? ramp.factor : 1.2));
+      const fixedMin = week.sessions.filter(s => s.status === 'done' || (s.status === 'planned' && s.locked) || (s.status === 'planned' && s.day != null && s.day < ti)).reduce((t, s) => t + (s.act?.min ?? s.min), 0);
+      let over = fixedMin + ahead.reduce((t, s) => t + s.min, 0) - capMin;
+      if (over > 15) {
+        const order = [...ahead.filter(s => !isKey(s)), ...ahead.filter(isKey)].sort((a, b) => (isKey(a) - isKey(b)) || b.min - a.min);
+        for (const s of order) {
+          if (over <= 0) break;
+          const floor = isKey(s) ? Math.round(s.min * 0.8 / 5) * 5 : s.kind === 'gym' || s.kind === 'climb' ? 45 : 30, cut = Math.min(over, s.min - floor);
+          if (cut >= 5) { s.min -= Math.floor(cut / 5) * 5; over -= Math.floor(cut / 5) * 5; s.capNote = s.capNote || (ramp ? L(`Возвращение после паузы: неделя ${ramp.week} из ${ramp.of}`, `Coming back: week ${ramp.week} of ${ramp.of}`) : L('Сокращено, чтобы неделя не выросла больше чем на 20% (правило 71)', 'Shortened so the week grows no more than 20% (rule 71)')); }
+        }
+        lines.push(ramp
+          ? L(`Возвращение после паузы ${state.resume.days} дн.: неделя ${ramp.week} из ${ramp.of}, объём ~${fHours(capMin)} — ${Math.round(ramp.factor * 100)}% от привычных ${fHours(avg * 60)} (правило 34)`, `Back after ${state.resume.days} days off: week ${ramp.week} of ${ramp.of}, about ${fHours(capMin)} — ${Math.round(ramp.factor * 100)}% of your usual ${fHours(avg * 60)} (rule 34)`)
+          : L(`Неделя сокращена до ~${fHours(capMin)}: за 4 недели в среднем ${fHours(avg * 60)}, больше +20% за раз — лишний риск (правило 71). Сначала урезаны лёгкие тренировки, главные — в последнюю очередь`, `Week trimmed to about ${fHours(capMin)}: your 4-week average is ${fHours(avg * 60)}, and more than +20% at once is extra risk (rule 71). Easy sessions were cut first, key ones last`));
+      }
+    }
+  }
+  week.guarded = !!from;
+  return lines;
+}
+// Runs the guard as its own change, so «Отменить» brings back the unguarded week.
+function guardWeek(wk, week, silent) {
+  const before = snapshot(week), lines = guard(wk, week);
+  if (!lines.length) return false;
+  place(wk, week);
+  commit(wk, week, before, L('правила безопасности', 'safety rules'), lines, {silent});
+  return true;
+}
+
+// Protected time: family mornings, a weekly commitment — busy for the planner like work, without the calendar.
+function blocksHTML() {
+  const D = DAYS(), list = state.prefs.blocks || [];
+  return `<div class="blocks">${list.map(b => `<div class="block-row"><div class="block-top"><input data-block="${b.id}" data-f="label" value="${esc(b.label || '')}" aria-label="${L('Название', 'Name')}"><button class="nav-btn" data-a="block-del" data-id="${b.id}" style="color:var(--danger)">${L('Убрать', 'Remove')}</button></div>
+      <div class="chips-row wrap">${D.map((d, i) => `<button class="chip" data-a="block-day" data-id="${b.id}" data-d="${i}" aria-pressed="${b.days.includes(i)}">${d}</button>`).join('')}</div>
+      <div class="wiz-row"><label class="field">${L('С', 'From')}<input data-block="${b.id}" data-f="from" type="time" value="${esc(b.from)}"></label><label class="field">${L('до', 'to')}<input data-block="${b.id}" data-f="to" type="time" value="${esc(b.to)}"></label></div></div>`).join('')}
+    <button class="btn link" data-a="block-add" style="justify-content:flex-start">${L('+ Защищённое время (семья, дети, обязательства)', '+ Protected time (family, kids, commitments)')}</button></div>`;
+}
+
+/* ---------- pause and coming back ---------- */
+const PAUSE_WHY = {injury: ['травма', 'injury'], ill: ['болезнь', 'illness'], life: ['жизнь: работа, семья, поездки', 'life: work, family, travel']};
+function pausePlan(reason) {
+  const wk = ymd(mondayOf(new Date())), week = state.weeks[wk], ti = todayIdx(wk);
+  state.pause = {from: todayStr(), reason};
+  delete state.resume;
+  if (week) {
+    const before = snapshot(week);
+    for (const s of week.sessions) if (s.status === 'planned' && (s.day == null || s.day >= ti)) { s.status = 'dropped'; s.why = L('Пауза', 'Paused'); }
+    commit(wk, week, before, L('пауза', 'pause'), [L(`Пауза: ${PAUSE_WHY[reason][0]}. Тренировки до конца недели убраны, новые недели не собираются. Вернёшься — объём поднимется постепенно`, `Paused: ${PAUSE_WHY[reason][1]}. Sessions for the rest of the week are off, no new weeks. When you’re back, volume comes back gradually`)]);
+  } else persist();
+}
+function resumePlan() {
+  const p = state.pause; if (!p) return;
+  const days = Math.max(1, Math.round((parseYmd(todayStr()) - parseYmd(p.from)) / 864e5));
+  state.resume = {at: todayStr(), days, reason: p.reason};
+  delete state.pause;
+  const wk = ymd(mondayOf(new Date())), ti = todayIdx(wk), week = state.weeks[wk] || ensureWeek(wk);
+  if (!week) return persist();
+  const before = snapshot(week);
+  week.sessions = week.sessions.filter(s => !(s.status === 'dropped' && s.why === L('Пауза', 'Paused')));
+  if (!week.sessions.some(s => s.status === 'planned' && s.day >= ti)) week.sessions.push(...templateFor().filter(t => t.day >= ti).map(newSession));
+  const lines = [L(`С возвращением: пауза ${days} дн.`, `Welcome back: ${days} days off`)];
+  lines.push(days <= 7 ? L('До недели — продолжаем как было (правило 34)', 'Up to a week off — carry on as before (rule 34)')
+    : days <= 14 ? L('8–14 дней — первые дни легко, объём чуть ниже (правило 34)', '8–14 days — easy first days, a bit less volume (rule 34)')
+    : days <= 28 ? L('15–28 дней — шаг назад на 2 недели: 70% и 85% объёма (правило 34)', '15–28 days — two weeks stepped back: 70% then 85% volume (rule 34)')
+    : L('Больше 4 недель — 4 недели набора: 60→90% объёма. Стоит пересобрать план (правило 34)', 'Over 4 weeks — a 4-week rebuild: 60→90% volume. Worth rebuilding the plan (rule 34)'));
+  if (p.reason === 'injury') lines.push(L('Бег — только без боли при ходьбе 30–45 мин и без боли в покое; сначала объём, интенсивность последней (правило 47)', 'Running only once 30–45 min walks are pain-free and there’s no pain at rest; volume before intensity (rule 47)'));
+  lines.push(...guard(wk, week));
+  place(wk, week);
+  commit(wk, week, before, L('возвращение', 'back'), lines);
+}
+function pauseSheet() {
+  openSheet(`<div class="sheet-head"><span class="wiz-title">${L('Пауза', 'Pause')}</span><button class="nav-btn" data-a="close-sheet">${L('Отмена', 'Cancel')}</button></div><div class="sheet-scroll wiz">
+    <h2 class="wiz-h">${L('Поставить программу на паузу?', 'Pause the program?')}</h2>
+    <p class="hint">${L('Тренировки до конца недели уберу, новые недели и выходные предложения не будут собираться. Когда вернёшься — объём поднимется постепенно, по сроку паузы (правило 34).', 'I’ll clear the rest of this week and stop building new weeks and weekend proposals. When you’re back, volume returns step by step, by how long you were off (rule 34).')}</p>
+    <div class="opts" style="padding-top:8px">${Object.entries(PAUSE_WHY).map(([k, v]) => `<button class="opt" data-a="pause-go" data-r="${k}"><b>${esc(L(v[0][0].toUpperCase() + v[0].slice(1), v[1][0].toUpperCase() + v[1].slice(1)))}</b></button>`).join('')}</div></div>`);
+}
+
+/* ---------- how a session felt (session RPE) ---------- */
+// One tap after a session: RPE 1–10 × minutes is load in the same currency for every sport, gym and climbing included (rule 74).
+const sLoad = s => s.rpe ? s.rpe * (s.act?.min ?? s.min) : 0;
+function rpeDue(wk) {
+  const week = state.weeks[wk]; if (!week) return null;
+  const ti = todayIdx(wk);
+  return week.sessions.filter(s => s.status === 'done' && !s.rpe && s.day != null && s.day <= ti && s.day >= ti - 2).sort((a, b) => b.day - a.day)[0] || null;
+}
+function rpeSheet(id) {
+  const week = state.weeks[view.wk], s = week?.sessions.find(x => x.id === id); if (!s) return;
+  const words = L(['', 'очень легко', '', 'легко', '', 'умеренно', '', 'тяжело', '', 'очень тяжело', 'максимум'], ['', 'very easy', '', 'easy', '', 'moderate', '', 'hard', '', 'very hard', 'max']);
+  openSheet(`<div class="sheet-head"><span class="wiz-title">${esc(kName(s.kind))}</span><button class="nav-btn" data-a="close-sheet">${L('Позже', 'Later')}</button></div><div class="sheet-scroll wiz">
+    <h2 class="wiz-h">${L('Насколько тяжело было в целом?', 'How hard was it overall?')}</h2>
+    <p class="hint">${L('Оценка через полчаса после тренировки, по шкале 1–10. Из неё и минут считается нагрузка — одинаково для бега, вела, зала и стены.', 'Rate the whole session about 30 min after, 1–10. With the minutes it gives load — the same for running, riding, gym and climbing.')}</p>
+    <div class="rpe-grid">${[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(n => `<button class="rpe-btn" data-a="rpe-set" data-id="${id}" data-n="${n}" aria-pressed="${s.rpe === n}"><b class="num">${n}</b>${words[n] ? `<span>${words[n]}</span>` : ''}</button>`).join('')}</div></div>`);
+}
+
 function newSession(t) {
   return {id: rid(), tid: t.id, kind: t.kind, min: t.min, pref: t.day, tod: t.tod, anchor: !!t.anchor, note: t.note || '', day: null, start: null, status: 'planned', why: '', ...(t.detail ? {detail: t.detail} : {}), ...(t.key ? {key: true} : {})};
 }
@@ -284,8 +412,12 @@ function ensureWeek(wk) {
   if (todayIdx(wk) > 6) return null; // past weeks are not planned retroactively
   // A week first opened mid-way starts from today: days already gone are not back-filled.
   const ti = todayIdx(wk);
-  const week = {sessions: templateFor().filter(t => t.day >= ti).map(newSession), log: [], away: [], cal: {}, busySeen: !!state.local.busy[wk]};
+  const week = {sessions: state.pause ? [] : templateFor().filter(t => t.day >= ti).map(newSession), log: [], away: [], cal: {}, busySeen: !!state.local.busy[wk], ...(state.pause ? {paused: true} : {})};
   place(wk, week, {fresh: true});
+  if (!state.pause) {
+    const before = snapshot(week), gl = guard(wk, week);
+    if (gl.length) { place(wk, week); week.log.unshift({at: new Date().toISOString(), text: L('правила безопасности', 'safety rules'), lines: gl, snap: before}); }
+  }
   state.weeks[wk] = week; persist();
   return week;
 }
@@ -435,6 +567,8 @@ function parse(text, wk) {
   const tod = has(words, ['утр', 'morning']) ? 'am' : has(words, ['вечер', 'evening', 'tonight']) ? 'pm' : null;
   let intent = null;
   if (/^(отмени|отменить|верни|undo)( последнее| это| last)?$/.test(t)) intent = 'undo';
+  else if (has(words, ['пауз', 'pause'])) intent = 'pause';
+  else if (/^(я )?(вернулся|вернулась|возвращаюсь|снова тренируюсь|продолжаю|resume|i'?m back)/.test(t)) intent = 'resume';
   else if (has(words, ['забол', 'болею', 'болен', 'больна', 'простыл', 'простуд', 'температур', 'sick', 'ill'])) intent = 'sick';
   else if (has(words, ['уезжа', 'уеду', 'командир', 'поездк', 'отъезд', 'away', 'trip', 'travel', 'улетаю'])) intent = 'away';
   else if (has(words, ['пропуст', 'пропущ', 'skip', 'miss', 'cancel', 'отмени']) || /не (смогу|успел|успею|пойду|получ)/.test(t)) intent = 'skip';
@@ -477,6 +611,8 @@ function run(text) {
   const dayName = i => i >= 0 && i <= 6 ? D[i] : null;
   switch (q.intent) {
     case 'undo': return undo(wk);
+    case 'pause': return pauseSheet();
+    case 'resume': return state.pause ? resumePlan() : reply(text, [L('Программа и так идёт', 'The program is already running')]);
     case 'move': {
       const s = findTarget(wk, week, q, 'move');
       const dest = (q.days.find(x => ['на', 'to', 'on', 'в', 'во'].includes(x.prev)) || q.days[q.days.length - 1])?.d;
@@ -581,6 +717,17 @@ function run(text) {
       week.away = [...new Set([...(week.away || []), ...range])].sort();
       for (const s of week.sessions) if (s.status === 'planned' && range.includes(s.day)) { s.locked = false; s.day = null; }
       lines.push(L(`${range.map(d => D[d]).join(', ')} — в поездке, тренировки оттуда убрал`, `${range.map(d => D[d]).join(', ')} — away, sessions moved out`));
+      // A trip of 2+ days keeps short formats every other day, unless the person said no training (rule 38).
+      if (range.length >= 2 && !/без трен|отдыха|отдыхаю|no training|rest/.test(t)) {
+        const runOk = !gate().known || gate().max === 0;
+        for (let k = 1; k < range.length; k += 2) {
+          const d = range[k], kind = runOk ? 'run_easy' : 'mobility';
+          const n = newSession({id: 'trip', kind, min: 30, day: d, tod: 'any', anchor: false, note: '', detail: L('Поездка: 20–30 мин лёгкого бега или зал отеля; нет времени — 10 мин мобильности', 'Trip: 20–30 min easy run or the hotel gym; no time — 10 min mobility')});
+          n.day = d; n.locked = true; n.travel = true; n.why = L('Короткая тренировка в поездке — держит ритм, не нагружает (правило 38)', 'A short session on the trip keeps the rhythm without load (rule 38)');
+          week.sessions.push(n);
+          lines.push(L(`${D[d]}: короткая — ${kName(kind).toLowerCase()} 30 мин, когда будет окно`, `${D[d]}: a short one — ${kName(kind).toLowerCase()} 30 min, whenever there’s a gap`));
+        }
+      }
       // Away sessions keep their old day as "from" so the log explains the move.
       const prev = JSON.parse(before).sessions;
       place(wk, week);
@@ -688,7 +835,7 @@ function onBusy(wk) {
   const ti = todayIdx(wk), lines = [];
   for (const s of week.sessions) {
     if (s.status !== 'planned' || s.day == null || s.day < ti || s.locked) continue;
-    const hit = blocks(wk, s.day).find(b => !b.work && b.s < s.start + s.min && b.e > s.start);
+    const hit = blocks(wk, s.day).find(b => !b.work && !b.own && b.s < s.start + s.min && b.e > s.start);
     if (hit) { lines.push(L(`В календаре «${hit.title}» ${hm(hit.s)} — пересобрал ${kName(s.kind).toLowerCase()}`, `“${hit.title}” at ${hm(hit.s)} in your calendar — moved ${kName(s.kind).toLowerCase()}`)); s.start = null; }
   }
   if (lines.length) { place(wk, week); commit(wk, week, before, L('календарь', 'calendar'), lines); }
@@ -717,6 +864,7 @@ async function loadActs(force) {
     const week = state.weeks[wk], before = snapshot(week), lines = matchActs(wk, week);
     if (lines.length) commit(wk, week, before, 'Garmin', lines, {silent: wk !== view.wk});
   }
+  for (const wk of Object.keys(state.weeks)) { const week = state.weeks[wk]; if (!week.guarded && !week.paused && todayIdx(wk) <= 6) guardWeek(wk, week, wk !== view.wk); }
   render();
 }
 // Older history: a range [from, to) that the cache doesn't reach yet. Returns how many activities came in.
@@ -1419,17 +1567,18 @@ function applyWeekPlan(wk, p, text) {
   const add = p.sessions.filter(x => x.day >= Math.max(ti, 0)).map((x, i) => newSession({id: 'p' + i, kind: x.kind, min: x.min, day: x.day, tod: x.tod, anchor: false, note: '', detail: x.detail, key: x.key}));
   week.sessions = [...keep, ...add];
   week.planBy = p.by || 'ai'; week.planNote = p.summary;
+  const guardLines = guard(wk, week);
   place(wk, week, {fresh: true});
   matchActs(wk, week);
   const D = DAYS();
-  commit(wk, week, before, text, [p.summary, ...add.map(s => s.day != null ? `${D[s.day]}${s.start != null ? ' ' + hm(s.start) : ''}: ${kName(s.kind)}, ${fDur(s.min)}` : L(`${kName(s.kind)}: ${whyText(s.why)}`, `${kName(s.kind)}: ${whyText(s.why)}`))]);
+  commit(wk, week, before, text, [p.summary, ...guardLines, ...add.map(s => s.day != null ? `${D[s.day]}${s.start != null ? ' ' + hm(s.start) : ''}: ${kName(s.kind)}, ${fDur(s.min)}` : L(`${kName(s.kind)}: ${whyText(s.why)}`, `${kName(s.kind)}: ${whyText(s.why)}`))]);
   scrollTo({top: 0, behavior: 'smooth'});
   return true;
 }
 
 // Weekend: the assistant drafts next week once (any device), the person accepts, discusses or keeps the usual week.
 function weeklyDue() {
-  if (!state.plan || !cloud.ai || !cloud.user || weekly.busy) return null;
+  if (state.pause || !state.plan || !cloud.ai || !cloud.user || weekly.busy) return null;
   if ((new Date().getDay() + 6) % 7 < 5) return null;
   const wk = nextMonday(), p = state.proposals[wk];
   if (state.weeks[wk]?.planBy) return null;
@@ -1687,6 +1836,7 @@ function programHTML() {
   let h = `<main class="screen"><header class="nav"><div class="nav-row"><button class="nav-btn" data-a="back">${icon('left')}${L('Неделя', 'Week')}</button><span class="nav-right"><button class="nav-btn icon-btn" data-a="settings" aria-label="${L('Настройки', 'Settings')}">${icon('gear', 22)}</button></span></div>
     <h1>${L('Программа', 'Program')}<span class="sub">${esc(sub)}</span></h1></header>`;
 
+  if (state.pause) h += `<section class="pg-card"><div class="card plan-prop" style="cursor:default"><span class="plan-prop-eyebrow">${L('Пауза', 'Paused')}</span><b>${L(`С ${fDay(state.pause.from)} — ${PAUSE_WHY[state.pause.reason]?.[0] || ''}. Недели не собираются, выходных предложений нет.`, `Since ${fDay(state.pause.from)} — ${PAUSE_WHY[state.pause.reason]?.[1] || ''}. No new weeks, no weekend proposals.`)}</b></div><div class="stack" style="padding-top:10px"><button class="btn primary" data-a="resume">${L('Возвращаюсь', 'I’m back')}</button></div></section>`;
   // The goal and the long view
   if (p?.outlook) h += `<section class="pg-card"><div class="section-title" style="padding-top:0">${L('Куда идём', 'Where this goes')}</div>${outlookHTML({...p.outlook, basis: null}, p.start, p)}</section>`;
   else h += `<section class="pg-card"><p class="hint" style="padding-bottom:12px">${p ? L('У этого плана нет прогноза — он собран до появления «Программы». Пересобери план, и здесь появится путь по неделям.', 'This plan has no outlook — it predates this tab. Rebuild it to see the week-by-week path here.') : L('Собери план: цель, спорт и время — и здесь появится путь по неделям, фазы и прогноз формы.', 'Build a plan — goal, sports and time — and the week-by-week path, phases and form outlook show up here.')}</p>
@@ -1709,6 +1859,8 @@ function programHTML() {
   else lines.push(L(`С начала программы (${fDay(start)}) прошло ${progWks.length} нед.: сделано ${done} из ${planned} тренировок (${share(done, planned)}%)${finished.length ? `, недель на 80% и выше подряд — ${streak}` : ''}.`, `Since the program started (${fDay(start)}), ${progWks.length} weeks: ${done} of ${planned} sessions done (${share(done, planned)}%)${finished.length ? `, weeks at 80%+ in a row — ${streak}` : ''}.`));
   if (ow) lines.push(L(`Эта неделя — ${PHASE[ow.phase][0].toLowerCase()}, ориентир ${fH(ow.hours)}; сделано ${fH(nowT.doneMin / 60)}.`, `This week: ${PHASE[ow.phase][1].toLowerCase()}, target ${fH(ow.hours)}; ${fH(nowT.doneMin / 60)} done.`));
   if (baseH > 0.2) lines.push(L(`Точка отсчёта — 4 недели до программы: в среднем ${fH(baseH)} в неделю по Garmin.`, `Baseline — the 4 weeks before the program: ${fH(baseH)} a week on average, from Garmin.`));
+  const rp = rampFor(cur);
+  if (rp) lines.push(L(`Возвращение после паузы: неделя ${rp.week} из ${rp.of}, ${Math.round(rp.factor * 100)}% привычного объёма (правило 34).`, `Coming back: week ${rp.week} of ${rp.of}, ${Math.round(rp.factor * 100)}% of usual volume (rule 34).`));
   if (daysLeft != null && daysLeft >= 0) lines.push(L(`До старта ${daysLeft} дн.`, `${daysLeft} days to the event.`));
   const maxMin = Math.max(1, ...prog.map(w => Math.max(w.planMin, w.doneMin)), (ow?.hours || 0) * 60);
   h += `<section class="pg-card"><div class="section-title" style="padding-top:0">${L('Как идёт', 'How it’s going')}</div>
@@ -1746,6 +1898,7 @@ function programHTML() {
       <p class="hint" style="padding-top:8px">${L('Каждые выходные ассистент собирает следующую неделю по этому ориентиру и по тому, как прошла текущая.', 'Every weekend the assistant builds the next week from this guide and how the current one went.')}</p></section>`;
     h += basisHTML(p.outlook.basis, false);
   }
+  if (p && !state.pause) h += `<div class="stack" style="padding-top:20px"><button class="btn link" data-a="pause-open">${L('Поставить на паузу — травма, болезнь, жизнь', 'Pause — injury, illness, life')}</button></div>`;
   return h + '</main>';
 }
 
@@ -1875,7 +2028,8 @@ function weekReview(wk) {
   const pain = days.map(d => state.checks[d]).filter(Boolean), painMax = Math.max(0, ...pain.map(c => Math.max(c.sit || 0, c.walk || 0)));
   const target = outlookWeek(wk), next = outlookWeek(ymd(addDays(parseYmd(wk), 7)));
   const ratio = t.planned ? t.done / t.planned : null, hard = t.doneMin ? Math.round(t.hardMin / t.doneMin * 100) : 0;
-  return {wk, partial, t, missed, keyMissed: missed.filter(isKey), longest, painMax, painDays: pain.length, target, next, ratio, hard, review: state.proposals[ymd(addDays(parseYmd(wk), 7))]?.review || ''};
+  const doneS = effs.filter(s => s.status === 'done'), rated = doneS.filter(s => s.rpe);
+  return {wk, partial, t, rated: rated.length, doneN: doneS.length, load: rated.reduce((t2, s) => t2 + sLoad(s), 0), missed, keyMissed: missed.filter(isKey), longest, painMax, painDays: pain.length, target, next, ratio, hard, review: state.proposals[ymd(addDays(parseYmd(wk), 7))]?.review || ''};
 }
 function reviewVerdict(r) {
   const n = `${r.t.done} ${L('из', 'of')} ${r.t.planned}`;
@@ -1906,6 +2060,7 @@ function reviewSheet(wk) {
     ${sports.length ? `<div class="section-title">${L('По видам спорта', 'By sport')}</div><div class="list pg-sports">${sports.map(([sp, m]) => `<div class="row"><span class="t"><b><span class="dot pg-dot ${sp}"></span>${esc(L(SPORTS[sp][0], SPORTS[sp][1]))}</b></span><span class="num pg-val">${fH(m / 60)}</span></div>`).join('')}</div>` : ''}
     <ul class="plan-why" style="padding-top:10px">
       ${r.longest ? `<li>${L(`Самая длинная — ${esc(r.longest.name || SPORTS[r.longest.sport]?.[0] || '')}, ${fDur(r.longest.min)}${r.longest.km ? `, ${String(r.longest.km).replace('.', ',')} км` : ''}`, `Longest — ${esc(r.longest.name || SPORTS[r.longest.sport]?.[1] || '')}, ${fDur(r.longest.min)}${r.longest.km ? `, ${r.longest.km} km` : ''}`)}</li>` : ''}
+      ${r.rated ? `<li>${L(`Нагрузка по ощущениям: ${r.load} (RPE × мин, оценено ${r.rated} из ${r.doneN})`, `Load by feel: ${r.load} (RPE × min, ${r.rated} of ${r.doneN} rated)`)}</li>` : ''}
       ${t.doneMin && !r.partial ? `<li>${L(`Тяжёлого — ${r.hard}% времени (ориентир 15–20%)`, `Hard work — ${r.hard}% of the time (guide 15–20%)`)}</li>` : ''}
       ${r.missed.length ? `<li>${L('Не случилось: ', 'Didn’t happen: ')}${esc(r.missed.map(s => `${kName(s.kind).toLowerCase()} (${D[s.day]})`).join(', '))}</li>` : ''}
       ${state.health?.track ? `<li>${r.painDays ? L(`Боль: отметок ${r.painDays}, максимум ${r.painMax}/10`, `Pain: ${r.painDays} check-ins, max ${r.painMax}/10`) : L('Боль не отмечалась', 'No pain check-ins')}</li>` : ''}
@@ -1988,6 +2143,7 @@ function weekHTML() {
   const doneS = effs.filter(s => s.status === 'done'), ex = extras(wk, week).filter(a => trainingSport(a.sport));
   const doneMin = doneS.reduce((a, s) => a + (s.act?.min ?? s.min), 0) + ex.reduce((a, x) => a + x.min, 0);
   h += reviewCardHTML(wk, ti);
+  h += pauseRpeHTML(wk, ti);
   h += alertsHTML(wk);
   h += planCardsHTML(wk);
   h += heroHTML(wk, week, effs, ti);
@@ -2087,6 +2243,21 @@ function weekListHTML(wk, week, effs, ti) {
   return h + '</div>';
 }
 // Things that need a decision before the plan can be trusted: sign-in, calendar, a doctor flag.
+// Re-place the weeks still ahead after a time rule changed (protected blocks): stable, and logged.
+function replanOpen() {
+  for (const wk of Object.keys(state.weeks)) {
+    const week = state.weeks[wk]; if (todayIdx(wk) > 6 || week.paused) continue;
+    const before = snapshot(week); place(wk, week);
+    if (before !== snapshot(week)) commit(wk, week, before, L('защищённое время', 'protected time'), [], {silent: true});
+  }
+}
+function pauseRpeHTML(wk, ti) {
+  let h = '';
+  if (state.pause && ti >= 0 && ti <= 6) h += `<button class="nudge" data-a="resume"><span>${L(`Пауза с ${fDay(state.pause.from)} — ${PAUSE_WHY[state.pause.reason]?.[0] || ''}`, `Paused since ${fDay(state.pause.from)} — ${PAUSE_WHY[state.pause.reason]?.[1] || ''}`)}</span><span class="nudge-go">${L('Вернуться', 'I’m back')} ›</span></button>`;
+  const r = ti >= 0 && ti <= 6 ? rpeDue(wk) : null;
+  if (r) h += `<button class="nudge" data-a="rpe-open" data-id="${r.id}"><span>${L(`Как ощущалась «${kName(r.kind)}»? Оцени усилие`, `How did “${kName(r.kind)}” feel? Rate the effort`)}</span><span class="nudge-go">1–10 ›</span></button>`;
+  return h;
+}
 function alertsHTML(wk) {
   let h = '';
   if (cloud.user && cloud.me && !cloud.me.member) h += `<button class="nudge" data-a="onb-open" data-s="code"><span>${L('Введи инвайт-код — подключим календарь, Garmin и ассистента', 'Enter an invite code to connect calendar, Garmin and the assistant')}</span><span class="nudge-go">${L('Ввести', 'Enter')} ›</span></button>`;
@@ -2445,7 +2616,7 @@ function sessionSheet(id) {
   if (raw.status === 'done' && raw.act?.id) return openActivity(raw.act.id, L(`По плану: ${kName(raw.kind)} · ${fDur(raw.short || raw.min)}`, `Planned: ${kName(raw.kind)} · ${fDur(raw.short || raw.min)}`), id);
   const when = s.day != null ? `${D[s.day]}${s.start != null ? ' · ' + hm(s.start) : ''} · ${fDur(s.min)}` : fDur(s.min);
   let h = `<div class="sheet-head"><h2>${esc(kName(s.kind))}</h2><button class="nav-btn" data-a="close-sheet">${L('Готово', 'Done')}</button></div><div class="sheet-scroll">
-    <p class="num" style="font-size:15px">${esc(when)}</p><p class="hint" style="margin:6px 0 4px">${esc(sDetail(s))}</p>${s.why ? `<p class="hint">${esc(whyText(s.why))}</p>` : ''}${guideHTML(s)}`;
+    <p class="num" style="font-size:15px">${esc(when)}</p><p class="hint" style="margin:6px 0 4px">${esc(sDetail(s))}</p>${s.why ? `<p class="hint">${esc(whyText(s.why))}</p>` : ''}${s.capNote ? `<p class="hint" style="color:var(--warn)">${esc(s.capNote)}</p>` : ''}${s.rpe ? `<p class="hint">${L('Усилие', 'Effort')}: ${s.rpe}/10 · ${L('нагрузка', 'load')} ${sLoad(s)}</p>` : ''}${guideHTML(s)}`;
   if (s.status === 'planned' || s.status === 'skipped' || s.status === 'done') {
     h += `<div class="section-title">${L('Перенести на', 'Move to')}</div><div class="chips-row" style="flex-wrap:wrap">${D.map((d, i) => `<button class="chip" data-a="sheet-move" data-id="${id}" data-d="${i}" ${i < ti ? 'disabled style="opacity:.35"' : ''} aria-pressed="${s.day === i}">${d}</button>`).join('')}</div>
       <div class="section-title">${L('Есть только', 'Only have')}</div><div class="chips-row">${[30, 45, 60, 90].map(m => `<button class="chip" data-a="sheet-min" data-id="${id}" data-m="${m}">${fDur(m)}</button>`).join('')}</div>
@@ -2501,6 +2672,7 @@ function settingsHTML() {
     ${p.work ? `<div class="wiz-row"><label class="field">${L('Работа с', 'Work from')}${tin('workStart', p.workStart)}</label><label class="field">${L('до', 'to')}${tin('workEnd', p.workEnd)}</label></div>` : ''}
     <div class="wiz-row"><label class="field">${L('Будни: с', 'Weekdays: from')}${tin('wdStart', p.wdStart)}</label><label class="field">${L('до', 'to')}${tin('wdEnd', p.wdEnd)}</label></div>
     <div class="wiz-row"><label class="field">${L('Выходные: с', 'Weekends: from')}${tin('weStart', p.weStart)}</label><label class="field">${L('до', 'to')}${tin('weEnd', p.weEnd)}</label></div>
+    ${blocksHTML()}
     <div class="wiz-row"><label class="field">${L('«Вечер» начинается', '“Evening” starts')}${tin('evening', p.evening)}</label><label class="field">${L('Дорога до и после встреч, мин', 'Travel around events, min')}<input data-pref="buffer" type="number" inputmode="numeric" min="0" max="90" step="5" value="${p.buffer}"></label></div>`;
 
   // The usual week: folded; the plan wizard writes it, and it's for fine-tuning
@@ -2609,6 +2781,14 @@ document.addEventListener('click', ev => {
   if (a === 'settings') { view.v = 'settings'; render(); scrollTo(0, 0); if (cloud.user) fn('me').then(d => { if (!d.error) { cloud.me = d; if (view.v === 'settings') render(); } }); if (cloud.user) fn('cal-status').then(d => { if (!d.error) { cloud.cals = d.calendars; cloud.google = d.google; if (view.v === 'settings') render(); } }); return; }
   if (a === 'back') { view.v = 'week'; render(); return; }
   if (a === 'review') return reviewSheet(el.dataset.wk);
+  if (a === 'pause-open') return pauseSheet();
+  if (a === 'pause-go') { closeSheet(); pausePlan(el.dataset.r); render(); return; }
+  if (a === 'resume') { resumePlan(); render(); return; }
+  if (a === 'rpe-open') return rpeSheet(el.dataset.id);
+  if (a === 'rpe-set') { const s = state.weeks[view.wk]?.sessions.find(x => x.id === el.dataset.id); if (s) { s.rpe = +el.dataset.n; persist(); } closeSheet(); toast(L('Записал', 'Saved')); render(); return; }
+  if (a === 'block-add') { state.prefs.blocks = [...(state.prefs.blocks || []), {id: rid(), label: L('Семья', 'Family'), days: [5], from: '08:00', to: '12:00'}]; persist(); replanOpen(); render(); return; }
+  if (a === 'block-del') { state.prefs.blocks = (state.prefs.blocks || []).filter(b => b.id !== el.dataset.id); persist(); replanOpen(); render(); return; }
+  if (a === 'block-day') { const b = (state.prefs.blocks || []).find(x => x.id === el.dataset.id), d = +el.dataset.d; if (b) { b.days = b.days.includes(d) ? b.days.filter(x => x !== d) : [...b.days, d].sort(); persist(); replanOpen(); render(); } return; }
   if (a === 'zones-open') { closeSheet(); view.v = 'settings'; render(); setTimeout(() => document.getElementById('zones')?.scrollIntoView({block: 'start'}), 50); return; }
   if (a === 'program') { view.v = 'program'; render(); scrollTo(0, 0); if (cloud.user && state.local.acts?.linked) ensureHist12().then(() => { if (view.v === 'program') render(); }); return; }
   if (a === 'undo') return undo(wk);
@@ -2743,6 +2923,11 @@ document.addEventListener('change', ev => {
     else if (f === 'thr') { if (parsePace(v)) state.zones.thr = v.replace('.', ':'); else return toast(L('Темп — в формате 4:30', 'Pace as 4:30')); }
     else state.zones[f] = Math.round(+v) || undefined;
     persist(); return;
+  }
+  if (el.dataset.block != null) {
+    const b = (state.prefs.blocks || []).find(x => x.id === el.dataset.block);
+    if (b) { b[el.dataset.f] = el.dataset.f === 'label' ? el.value.slice(0, 40) : el.value; persist(); if (el.dataset.f !== 'label') replanOpen(); }
+    return;
   }
   if (el.dataset.health != null) {
     state.health = {...(state.health || {}), [el.dataset.health]: el.type === 'checkbox' ? el.checked : el.value.slice(0, 160)};

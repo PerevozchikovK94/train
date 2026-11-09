@@ -506,3 +506,17 @@ button.pg-week{width:100%;text-align:left;background:none;padding:2px 0;cursor:p
 .tpl input[type=checkbox]{width:22px;height:22px;min-height:0;padding:0;flex:none;accent-color:var(--accent)}
 .tpl .check{justify-content:flex-start}
 .wiz-row.three{align-items:end}
+
+/* effort (RPE) */
+.rpe-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;padding-top:12px}
+.rpe-btn{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;min-height:64px;border-radius:12px;background:var(--fill);color:var(--ink)}
+.rpe-btn b{font-size:20px;font-weight:700}
+.rpe-btn span{font-size:11px;line-height:1.2;color:var(--muted);text-align:center}
+.rpe-btn[aria-pressed="true"]{background:var(--accent);color:var(--accent-ink)}
+.rpe-btn[aria-pressed="true"] span{color:var(--accent-ink)}
+/* protected time */
+.blocks{margin:4px 0 12px}
+.block-row{border-top:1px solid var(--line);padding:10px 0;display:flex;flex-direction:column;gap:8px}
+.block-top{display:flex;align-items:center;gap:10px}
+.block-top input{flex:1;border:0;background:var(--fill);border-radius:10px;padding:10px;font-size:15px;min-height:42px}
+.blocks .btn.link{text-align:left;padding-left:0}
