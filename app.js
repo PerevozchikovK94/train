@@ -1488,10 +1488,10 @@ function planCardsHTML(wk) {
 }
 function planSettingsHTML() {
   const p = state.plan;
-  let h = `<div class="section-title">${L('План', 'Plan')}</div>`;
-  if (p) h += `<div class="list" style="margin-bottom:12px"><div class="row" style="display:block"><span class="t"><b>${esc(L(GOALS[p.goal]?.[0] || '', GOALS[p.goal]?.[1] || ''))}${p.goal === 'event' && p.eventName ? ' · ' + esc(p.eventName) : ''}</b><span>${esc(p.sports.map(sp => L(SPORTS[sp][0], SPORTS[sp][1])).join(', '))} · ${p.days} ${L('в неделю', 'a week')} · ~${p.hours}${L(' ч', ' h')}</span></span></div></div>${p.outlook ? outlookHTML(p.outlook, p.start, p, false) : ''}`;
-  else h += `<p class="hint" style="padding-bottom:12px">${L('Плана нет — недели собираются из «Обычной недели» ниже.', 'No plan — weeks come from the usual week below.')}</p>`;
-  return h + `<div class="stack" style="margin-bottom:24px"><button class="btn ${p ? 'quiet' : 'primary'}" data-a="plan-open">${p ? L('Собрать план заново', 'Rebuild the plan') : L('Собрать план', 'Build a plan')}</button></div>`;
+  let h = `<div class="section-title">${L('План', 'Plan')}</div><div class="list">`;
+  if (p) h += `<button class="row" data-a="program"><span class="t"><b>${esc(L(GOALS[p.goal]?.[0] || '', GOALS[p.goal]?.[1] || ''))}${p.goal === 'event' && p.eventName ? ' · ' + esc(p.eventName) : ''}</b><span>${esc(p.sports.map(sp => L(SPORTS[sp][0], SPORTS[sp][1])).join(', '))} · ${p.days} ${L('в неделю', 'a week')} · ~${p.hours}${L(' ч', ' h')}</span></span><span class="nudge-go">${L('Программа', 'Program')} ›</span></button>`;
+  else h += `<div class="row"><span class="t"><b>${L('Плана нет', 'No plan')}</b><span>${L('Недели собираются из обычной недели', 'Weeks come from the usual week')}</span></span></div>`;
+  return h + `</div><div class="stack set-actions"><button class="btn ${p ? 'link' : 'primary'}" data-a="plan-open">${p ? L('Собрать план заново', 'Rebuild the plan') : L('Собрать план', 'Build a plan')}</button></div>`;
 }
 
 /* ---------- onboarding: account by invite → calendar → Garmin → time → health → the plan wizard ---------- */
@@ -1654,9 +1654,9 @@ async function onbGarmin() {
 function healthHTML() {
   const h = state.health || {};
   return `<div class="section-title">${L('Травма или боль', 'Injury or pain')}</div>
-    <label class="check" style="justify-content:flex-start;padding:4px 0 12px"><input type="checkbox" data-health="track" ${h.track ? 'checked' : ''}> ${L('Каждый день спрашивать про боль и беречь, пока болит', 'Ask about pain each day and go easy while it hurts')}</label>
+    <label class="check set-check"><input type="checkbox" data-health="track" ${h.track ? 'checked' : ''}> ${L('Каждый день спрашивать про боль и беречь, пока болит', 'Ask about pain each day and go easy while it hurts')}</label>
     ${h.track ? `<label class="field">${L('Что и где', 'What and where')}<input data-health="note" value="${esc(h.note || '')}" placeholder="${L('Например: колено после операции', 'For example: knee after surgery')}"></label>
-      <label class="field" style="margin-bottom:24px">${L('Правило от врача или своё', 'A rule from your doctor, or your own')}<input data-health="rule" value="${esc(h.rule || '')}" placeholder="${L('Например: бег только после 48 ч без боли', 'For example: run only after 48 h pain-free')}"></label>` : '<div style="height:12px"></div>'}`;
+      <label class="field">${L('Правило от врача или своё', 'A rule from your doctor, or your own')}<input data-health="rule" value="${esc(h.rule || '')}" placeholder="${L('Например: бег только после 48 ч без боли', 'For example: run only after 48 h pain-free')}"></label>` : ''}`;
 }
 
 /* ---------- program tab: the plan's long view and how it's going ---------- */
@@ -1858,7 +1858,7 @@ function zonesHTML() {
     <div class="wiz-row three"><label class="field">FTP, ${L('Вт', 'W')}<input data-zone="ftp" type="number" inputmode="numeric" min="80" max="500" value="${esc(z.ftp || '')}" placeholder="230"></label>
     <label class="field">${L('Порог бега, мин/км', 'Run threshold, min/km')}<input data-zone="thr" inputmode="numeric" value="${esc(z.thr || '')}" placeholder="4:30"></label>
     <label class="field">${L('Пульс на пороге', 'Threshold HR')}<input data-zone="lthr" type="number" inputmode="numeric" min="100" max="210" value="${esc(z.lthr || '')}" placeholder="168"></label></div>
-    <p class="hint" style="padding:6px 0 24px">${L('FTP — из теста 20 мин × 0,95 или ramp-теста; порог бега — темп, который держишь ~час (≈ темп 10 км у любителя). Перепроверять раз в 6–8 недель (правило 28).', 'FTP — from a 20-min test × 0.95 or a ramp test; run threshold — the pace you can hold ~an hour (≈ 10 km race pace for amateurs). Retest every 6–8 weeks (rule 28).')}</p>`;
+    <p class="hint" style="padding-top:6px">${L('FTP — из теста 20 мин × 0,95 или ramp-теста; порог бега — темп, который держишь ~час (≈ темп 10 км у любителя). Перепроверять раз в 6–8 недель (правило 28).', 'FTP — from a 20-min test × 0.95 or a ramp test; run threshold — the pace you can hold ~an hour (≈ 10 km race pace for amateurs). Retest every 6–8 weeks (rule 28).')}</p>`;
 }
 
 /* ---------- week review ---------- */
@@ -1939,7 +1939,7 @@ function invitesHTML() {
   const list = invites.list || [];
   return `<div class="section-title">${L('Пригласить', 'Invite')}</div><p class="hint" style="padding-bottom:12px">${L('Один код — один человек. По ссылке сразу откроется регистрация с кодом.', 'One code, one person. The link opens sign-up with the code filled in.')}</p>
     ${list.length ? `<div class="list" style="margin-bottom:12px">${list.map(v => `<div class="row"><span class="t"><b class="num">${esc(v.code)}</b><span>${v.uses >= v.max_uses ? L('Использован', 'Used') : L(`Свободен · ${v.max_uses - v.uses} из ${v.max_uses}`, `Open · ${v.max_uses - v.uses} of ${v.max_uses}`)}</span></span>${v.uses < v.max_uses ? `<button class="nav-btn" data-a="invite-copy" data-code="${esc(v.code)}">${L('Ссылка', 'Link')}</button>` : ''}</div>`).join('')}</div>` : ''}
-    <div class="stack" style="margin-bottom:24px"><button class="btn quiet" data-a="invite-new" ${invites.busy ? 'disabled' : ''}>${invites.busy ? L('Создаю…', 'Creating…') : L('Создать инвайт', 'Create an invite')}</button></div>`;
+    <div class="stack"><button class="btn quiet" data-a="invite-new" ${invites.busy ? 'disabled' : ''}>${invites.busy ? L('Создаю…', 'Creating…') : L('Создать инвайт', 'Create an invite')}</button></div>`;
 }
 
 /* ---------- view ---------- */
@@ -2467,61 +2467,69 @@ function daySheet(i) {
 
 /* ---------- settings ---------- */
 let authMode = 'in';
+// Settings, grouped by what they're for: who you are, the plan, what's connected, when you can train,
+// the usual week (folded — the plan wizard writes it), your body, the assistant, invites, language.
 function settingsHTML() {
-  let h = `<main class="screen"><header class="nav"><div class="nav-row"><button class="nav-btn" data-a="back">${icon('left')}${L('Неделя', 'Week')}</button><span></span></div><h1>${L('Настройки', 'Settings')}</h1></header>`;
-  h += `<div class="seg" role="group" style="margin-bottom:16px"><button data-a="lang" data-l="ru" aria-pressed="${lang === 'ru'}">Русский</button><button data-a="lang" data-l="en" aria-pressed="${lang === 'en'}">English</button></div>`;
+  const D = DAYS(), p = state.prefs, tin = (f, v) => `<input data-pref="${f}" type="time" value="${esc(v)}">`;
+  let h = `<main class="screen settings"><header class="nav"><div class="nav-row"><button class="nav-btn" data-a="back">${icon('left')}${L('Неделя', 'Week')}</button><span></span></div><h1>${L('Настройки', 'Settings')}</h1></header>`;
   h += acctHTML();
   h += planSettingsHTML();
-  h += healthHTML();
-  h += zonesHTML();
-  if (cloud.me?.ai) { const u = cloud.me.ai; h += `<p class="hint" style="padding:0 0 24px">${u.unlimited ? L('Ассистент: без ограничений.', 'Assistant: no limits.') : L(`Ассистент сегодня: ${u.chat.used} из ${u.chat.limit} сообщений, ${u.plan.used} из ${u.plan.limit} сборок плана. Обновляется в полночь UTC.`, `Assistant today: ${u.chat.used} of ${u.chat.limit} messages, ${u.plan.used} of ${u.plan.limit} plan builds. Resets at midnight UTC.`)}</p>`; }
-  h += invitesHTML();
-  if (cloud.user) {
-    h += `<div class="section-title">${L('Календарь', 'Calendar')}</div>`;
-    const cals = cloud.cals || [];
-    if (cals.length) h += `<div class="list" style="margin-bottom:12px">${cals.map(c => `<div class="row"><span class="t"><b>${esc(c.label)}</b><span>${c.last_error ? (c.last_error === 'google_revoked' ? L('Доступ отозван — подключи заново', 'Access revoked — connect again') : L('Не загрузился: ', 'Failed: ') + esc(c.last_error)) : c.checked_at ? L('Обновлён ', 'Updated ') + new Date(c.checked_at).toLocaleString(lang === 'ru' ? 'ru-RU' : 'en-GB', {day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'}) : ''}</span></span><button class="nav-btn" data-a="cal-remove" data-id="${esc(c.id)}">${L('Убрать', 'Remove')}</button></div>`).join('')}</div>`;
-    if (cloud.google) h += `<div class="stack" style="margin-bottom:12px"><button class="btn primary" data-a="google" ${cloud.calBusy ? 'disabled' : ''}>${L('Подключить Google Календарь', 'Connect Google Calendar')}</button></div>
-      <p class="hint" style="padding-bottom:16px">${L('Только чтение: время и названия событий. Google может показать «приложение не проверено» — это моё приложение, оно пока в бете: «Дополнительно» → «Перейти».', 'Read-only: event times and titles. Google may say the app isn’t verified yet — it’s in beta: Advanced → Go to app.')}</p>`;
-    h += `<p class="hint" style="padding-bottom:10px">${cloud.google ? L('Другой календарь (Apple, Outlook, рабочий) — ссылкой iCal. ', 'Another calendar (Apple, Outlook, work) — by iCal link. ') : ''}${L('В Google (с компьютера): Настройки → нужный календарь → «Интеграция календаря» → «Секретный адрес в формате iCal». Ссылка хранится на сервере, приложение видит только занятость и названия событий.', 'In Google (desktop): Settings → your calendar → Integrate calendar → Secret address in iCal format. The link stays on the server; the app sees only busy times and event titles.')}</p>
-      <form id="calForm" class="stack" style="margin-bottom:10px"><label class="field">${L('Ссылка iCal (.ics)', 'iCal link (.ics)')}<input id="calUrl" type="url" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://calendar.google.com/calendar/ical/…/basic.ics" required></label>
-      <button class="btn ${cloud.google ? 'quiet' : 'primary'}" type="submit" ${cloud.calBusy ? 'disabled' : ''}>${cloud.calBusy ? L('Проверяю…', 'Checking…') : L('Подключить по ссылке', 'Connect by link')}</button></form>
-      <label class="btn quiet" style="margin-bottom:24px">${L('Или загрузить файл .ics на эту неделю', 'Or load an .ics file for this week')}<input type="file" id="icsFile" accept=".ics,text/calendar" hidden></label>`;
-    const a = state.local.acts;
+
+  // What's connected: calendars and Garmin, one block
+  if (cloud.user && cloud.me?.member !== false) {
+    const cals = cloud.cals || [], a = state.local.acts, gl = cloud.me?.garmin?.linked ?? a?.linked;
     const since = a?.from ? parseYmd(a.from).toLocaleDateString(lang === 'ru' ? 'ru-RU' : 'en-GB', {day: 'numeric', month: 'short', year: 'numeric'}) : '';
-    const gl = cloud.me?.garmin?.linked ?? a?.linked;
-    h += `<div class="section-title">Garmin</div>`;
-    if (gl) h += `<p class="hint" style="padding-bottom:12px">${a?.list ? L(`Подключён · ${a.list.length} активностей с ${since}`, `Linked · ${a.list.length} activities since ${since}`) : L('Подключён', 'Linked')}${a?.error ? ' · ' + esc(a.error) : ''}</p>
-      <div class="stack" style="margin-bottom:24px"><button class="btn quiet" data-a="history" ${histBusy.on ? 'disabled' : ''}>${histBusy.on ? L('Загружаю…', 'Loading…') : L('Загрузить историю за год', 'Load a year of history')}</button><button class="btn link danger" data-a="garmin-unlink">${L('Отвязать Garmin', 'Unlink Garmin')}</button></div>`;
-    else if (cloud.me?.member) h += `<p class="hint" style="padding-bottom:12px">${L('Garmin Connect → Настройки → Personal API → Create key (действует год). Скопируй ключ целиком и вставь — он общий с «Залом» и хранится на сервере.', 'Garmin Connect → Settings → Personal API → Create key (lasts a year). Paste the whole key — it’s shared with the gym app and stays on the server.')}</p>
-      <form id="garminForm" class="stack" style="margin-bottom:24px"><label class="field">${L('Ключ Personal API', 'Personal API key')}<input id="garminKey" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" required></label><button class="btn primary" type="submit">${L('Подключить Garmin', 'Connect Garmin')}</button></form>`;
-    else h += `<p class="hint" style="padding-bottom:24px">${L('Проверяю…', 'Checking…')}</p>`;
+    h += `<div class="section-title">${L('Подключения', 'Connections')}</div><div class="list">`;
+    h += cals.map(c => `<div class="row"><span class="t"><b>${icon('calendar', 16)} ${esc(c.label)}</b><span>${c.last_error ? (c.last_error === 'google_revoked' ? L('Доступ отозван — подключи заново', 'Access revoked — connect again') : L('Не загрузился: ', 'Failed: ') + esc(c.last_error)) : c.checked_at ? L('Обновлён ', 'Updated ') + new Date(c.checked_at).toLocaleString(lang === 'ru' ? 'ru-RU' : 'en-GB', {day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'}) : ''}</span></span><button class="nav-btn" data-a="cal-remove" data-id="${esc(c.id)}">${L('Убрать', 'Remove')}</button></div>`).join('');
+    if (!cals.length) h += `<div class="row"><span class="t"><b>${icon('calendar', 16)} ${L('Календарь', 'Calendar')}</b><span>${L('Не подключён — тренировки встают в рабочие рамки без учёта встреч', 'Not connected — sessions ignore your meetings')}</span></span></div>`;
+    h += `<div class="row"><span class="t"><b>Garmin</b><span>${gl ? (a?.list ? L(`${a.list.length} активностей с ${since}`, `${a.list.length} activities since ${since}`) : L('Подключён', 'Linked')) + (a?.error ? ' · ' + esc(a.error) : '') : L('Не подключён', 'Not linked')}</span></span>${gl ? `<button class="nav-btn" data-a="garmin-unlink" style="color:var(--danger)">${L('Отвязать', 'Unlink')}</button>` : ''}</div></div>`;
+    h += `<div class="stack set-actions">${cloud.google ? `<button class="btn quiet" data-a="google" ${cloud.calBusy ? 'disabled' : ''}>${L('Подключить Google Календарь', 'Connect Google Calendar')}</button>` : ''}
+      ${gl ? `<button class="btn link" data-a="history" ${histBusy.on ? 'disabled' : ''}>${histBusy.on ? L('Загружаю…', 'Loading…') : L('Подтянуть историю Garmin за год', 'Pull a year of Garmin history')}</button>` : ''}</div>`;
+    h += `<details class="set-more"><summary>${L('Другой календарь — по ссылке iCal или файлом', 'Another calendar — by iCal link or file')}</summary>
+      <p class="hint">${L('Apple, Outlook, рабочий. В Google: Настройки → календарь → «Секретный адрес в формате iCal». Ссылка хранится на сервере, приложение видит только занятость и названия.', 'Apple, Outlook, work. In Google: Settings → your calendar → Secret address in iCal format. The link stays on the server; the app sees only busy times and titles.')}</p>
+      <form id="calForm" class="stack"><label class="field">${L('Ссылка iCal (.ics)', 'iCal link (.ics)')}<input id="calUrl" type="url" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://…/basic.ics" required></label>
+      <button class="btn quiet" type="submit" ${cloud.calBusy ? 'disabled' : ''}>${cloud.calBusy ? L('Проверяю…', 'Checking…') : L('Подключить по ссылке', 'Connect by link')}</button></form>
+      <label class="btn link" style="margin-top:4px">${L('Загрузить файл .ics на эту неделю', 'Load an .ics file for this week')}<input type="file" id="icsFile" accept=".ics,text/calendar" hidden></label></details>`;
+    if (!gl && cloud.me?.member) h += `<details class="set-more"><summary>${L('Подключить Garmin', 'Connect Garmin')}</summary>
+      <p class="hint">${L('Garmin Connect → Настройки → Personal API → Create key (действует год). Ключ общий с «Залом» и хранится на сервере.', 'Garmin Connect → Settings → Personal API → Create key (lasts a year). Shared with the gym app, stays on the server.')}</p>
+      <form id="garminForm" class="stack"><label class="field">${L('Ключ Personal API', 'Personal API key')}<input id="garminKey" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" required></label><button class="btn primary" type="submit">${L('Подключить', 'Connect')}</button></form></details>`;
   }
-  // template
-  h += `<div class="section-title">${L('Обычная неделя', 'Usual week')}</div><p class="hint" style="padding-bottom:4px">${L('Из этого собирается каждая новая неделя. День — желаемый: если он занят, сессия переедет и скажет почему. Якорь не двигается.', 'Every new week starts from this. The day is a preference: if it’s busy, the session moves and says why. An anchor stays put.')}</p><div>`;
-  const D = DAYS();
+
+  // When you can train
+  h += `<div class="section-title">${L('Когда можно тренироваться', 'When you can train')}</div>
+    <label class="check set-check"><input type="checkbox" data-pref="work" ${p.work ? 'checked' : ''}> ${L('Работаю по будням — это время занято', 'I work on weekdays — that time is taken')}</label>
+    ${p.work ? `<div class="wiz-row"><label class="field">${L('Работа с', 'Work from')}${tin('workStart', p.workStart)}</label><label class="field">${L('до', 'to')}${tin('workEnd', p.workEnd)}</label></div>` : ''}
+    <div class="wiz-row"><label class="field">${L('Будни: с', 'Weekdays: from')}${tin('wdStart', p.wdStart)}</label><label class="field">${L('до', 'to')}${tin('wdEnd', p.wdEnd)}</label></div>
+    <div class="wiz-row"><label class="field">${L('Выходные: с', 'Weekends: from')}${tin('weStart', p.weStart)}</label><label class="field">${L('до', 'to')}${tin('weEnd', p.weEnd)}</label></div>
+    <div class="wiz-row"><label class="field">${L('«Вечер» начинается', '“Evening” starts')}${tin('evening', p.evening)}</label><label class="field">${L('Дорога до и после встреч, мин', 'Travel around events, min')}<input data-pref="buffer" type="number" inputmode="numeric" min="0" max="90" step="5" value="${p.buffer}"></label></div>`;
+
+  // The usual week: folded; the plan wizard writes it, and it's for fine-tuning
+  const tplMin = state.template.reduce((t, x) => t + x.min, 0);
+  h += `<details class="set-more set-tpl"><summary>${L('Обычная неделя', 'Usual week')} <span class="muted num">· ${state.template.length} ${L('трен.', 'sessions')} · ${fHours(tplMin)}</span></summary>
+    <p class="hint">${L('Из неё собирается неделя, когда нет предложения ассистента. День — желаемый: если он занят, тренировка переедет и скажет почему. Якорь не двигается.', 'Weeks are built from this when there’s no assistant proposal. The day is a preference: if it’s busy, the session moves and says why. An anchor stays put.')}</p>`;
   state.template.forEach((tpl, idx) => {
     h += `<div class="tpl"><div class="full"><select data-tpl="${idx}" data-f="kind" style="width:auto">${Object.keys(KINDS).filter(k => k !== 'mobility').map(k => `<option value="${k}" ${tpl.kind === k ? 'selected' : ''}>${esc(kName(k))}</option>`).join('')}</select><button class="nav-btn" data-a="tpl-del" data-i="${idx}" style="color:var(--danger)">${L('Убрать', 'Remove')}</button></div>
-      <select data-tpl="${idx}" data-f="day">${D.map((d, i) => `<option value="${i}" ${tpl.day === i ? 'selected' : ''}>${d}</option>`).join('')}</select>
-      <select data-tpl="${idx}" data-f="tod">${[['am', L('утро', 'morning')], ['pm', L('вечер', 'evening')], ['any', L('любое время', 'any time')]].map(([v, n]) => `<option value="${v}" ${tpl.tod === v ? 'selected' : ''}>${n}</option>`).join('')}</select>
-      <label class="field" style="font-size:12px">${L('Минут', 'Minutes')}<input data-tpl="${idx}" data-f="min" type="number" inputmode="numeric" min="15" max="480" step="5" value="${tpl.min}"></label>
-      <label class="field" style="font-size:12px">${L('Заметка', 'Note')}<input data-tpl="${idx}" data-f="note" value="${esc(tpl.note || '')}" placeholder="${L('с друзьями', 'with friends')}"></label>
-      <label class="check full" style="justify-content:flex-start"><input type="checkbox" data-tpl="${idx}" data-f="anchor" ${tpl.anchor ? 'checked' : ''}> ${L('Якорь — не двигать', 'Anchor — don’t move')}</label></div>`;
+      <select data-tpl="${idx}" data-f="day" aria-label="${L('День', 'Day')}">${D.map((d, i) => `<option value="${i}" ${tpl.day === i ? 'selected' : ''}>${d}</option>`).join('')}</select>
+      <select data-tpl="${idx}" data-f="tod" aria-label="${L('Время', 'Time')}">${[['am', L('утро', 'morning')], ['pm', L('вечер', 'evening')], ['any', L('любое время', 'any time')]].map(([v, n]) => `<option value="${v}" ${tpl.tod === v ? 'selected' : ''}>${n}</option>`).join('')}</select>
+      <label class="tpl-min"><input data-tpl="${idx}" data-f="min" type="number" inputmode="numeric" min="15" max="480" step="5" value="${tpl.min}" aria-label="${L('Минут', 'Minutes')}"><span>${L('мин', 'min')}</span></label>
+      <label class="check"><input type="checkbox" data-tpl="${idx}" data-f="anchor" ${tpl.anchor ? 'checked' : ''}> ${L('Якорь', 'Anchor')}</label></div>`;
   });
-  h += `</div><div class="stack" style="padding:12px 0 24px"><button class="btn quiet" data-a="tpl-add">${L('Добавить тренировку', 'Add a session')}</button><button class="btn quiet" data-a="rebuild">${L('Пересобрать текущую неделю по шаблону', 'Rebuild this week from the template')}</button></div>`;
-  // day bounds
-  const p = state.prefs, tin = (f, v) => `<input data-pref="${f}" type="time" value="${esc(v)}">`;
-  h += `<div class="section-title">${L('Когда можно тренироваться', 'When you can train')}</div><div class="tpl" style="border:0">
-    <label class="field" style="font-size:12px">${L('Будни с', 'Weekdays from')}${tin('wdStart', p.wdStart)}</label><label class="field" style="font-size:12px">${L('до', 'to')}${tin('wdEnd', p.wdEnd)}</label>
-    <label class="field" style="font-size:12px">${L('Выходные с', 'Weekends from')}${tin('weStart', p.weStart)}</label><label class="field" style="font-size:12px">${L('до', 'to')}${tin('weEnd', p.weEnd)}</label>
-    <label class="field" style="font-size:12px">${L('Вечер начинается', 'Evening starts')}${tin('evening', p.evening)}</label><label class="field" style="font-size:12px">${L('Дорога вокруг встреч, мин', 'Travel around events, min')}<input data-pref="buffer" type="number" min="0" max="90" step="5" value="${p.buffer}"></label>
-    <label class="check full" style="justify-content:flex-start"><input type="checkbox" data-pref="work" ${p.work ? 'checked' : ''}> ${L('Рабочие часы по будням считать занятыми', 'Treat weekday work hours as busy')}</label>
-    <label class="field" style="font-size:12px">${L('Работа с', 'Work from')}${tin('workStart', p.workStart)}</label><label class="field" style="font-size:12px">${L('до', 'to')}${tin('workEnd', p.workEnd)}</label></div>`;
-  h += `<p class="hint" style="padding:24px 0 8px"><a href="privacy.html" style="color:var(--accent)">${L('Конфиденциальность', 'Privacy')}</a></p>`;
+  h += `<div class="stack" style="padding-top:12px"><button class="btn quiet" data-a="tpl-add">${L('Добавить тренировку', 'Add a session')}</button><button class="btn link" data-a="rebuild">${L('Пересобрать эту неделю по обычной', 'Rebuild this week from the usual one')}</button></div></details>`;
+
+  // Body: thresholds and injury
+  h += zonesHTML();
+  h += healthHTML();
+
+  // The assistant's allowance, invites (admins), language and privacy
+  if (cloud.me?.ai) { const u = cloud.me.ai; h += `<div class="section-title">${L('Ассистент', 'Assistant')}</div><p class="hint">${u.unlimited ? L('Без ограничений.', 'No limits.') : L(`Сегодня: ${u.chat.used} из ${u.chat.limit} сообщений и ${u.plan.used} из ${u.plan.limit} сборок плана. Обновляется в полночь UTC.`, `Today: ${u.chat.used} of ${u.chat.limit} messages and ${u.plan.used} of ${u.plan.limit} plan builds. Resets at midnight UTC.`)}</p>`; }
+  h += invitesHTML();
+  h += `<div class="section-title">${L('Язык', 'Language')}</div><div class="seg" role="group"><button data-a="lang" data-l="ru" aria-pressed="${lang === 'ru'}">Русский</button><button data-a="lang" data-l="en" aria-pressed="${lang === 'en'}">English</button></div>
+    <p class="hint" style="padding:24px 0 8px"><a href="privacy.html" style="color:var(--accent)">${L('Конфиденциальность', 'Privacy')}</a></p>`;
   return h + '</main>';
 }
 function acctHTML() {
   if (!cloud.client) return '';
-  if (cloud.user) return `<div class="section-title" style="padding-top:4px">${L('Аккаунт', 'Account')}</div><div class="list" style="margin-bottom:24px"><div class="row"><span class="t"><b>${esc(cloud.user.email || '')}</b><span id="acctStatus">${esc(acctStatus())}</span></span><button class="nav-btn" data-a="sign-out">${L('Выйти', 'Sign out')}</button></div></div>`;
+  if (cloud.user) return `<div class="section-title" style="padding-top:4px">${L('Аккаунт', 'Account')}</div><div class="list"><div class="row"><span class="t"><b>${esc(cloud.user.email || '')}</b><span id="acctStatus">${esc(acctStatus())}</span></span><button class="nav-btn" data-a="sign-out">${L('Выйти', 'Sign out')}</button></div></div>`;
   return `<div class="section-title" style="padding-top:4px">${L('Аккаунт', 'Account')}</div><div class="stack" style="margin-bottom:12px"><button class="btn quiet" data-a="onb-open" data-s="account">${L('Создать аккаунт по инвайт-коду', 'Create an account with an invite code')}</button></div><p class="hint" style="padding-bottom:12px">${L('Тот же аккаунт, что в «Зале». Без входа план живёт только на этом устройстве и не видит календарь.', 'Same account as the gym app. Without it the plan lives on this device only and can’t see your calendar.')}</p>
     <form class="stack" id="authForm" style="margin-bottom:24px"><label class="field">${L('Почта', 'Email')}<input id="authEmail" type="email" inputmode="email" autocomplete="username" autocapitalize="off" required></label>
     <label class="field">${L('Пароль', 'Password')}<input id="authPw" type="password" autocomplete="current-password" minlength="8" required></label>
@@ -2743,7 +2751,7 @@ document.addEventListener('change', ev => {
   if (el.dataset.pref != null) {
     const f = el.dataset.pref;
     state.prefs[f] = f === 'work' ? el.checked : f === 'buffer' ? Math.max(0, Math.min(90, +el.value || 0)) : el.value;
-    persist();
+    persist(); if (f === 'work' && view.v === 'settings') render();
   }
 });
 document.addEventListener('submit', ev => {
