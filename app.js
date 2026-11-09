@@ -1235,20 +1235,20 @@ function outlookChart(o, start, a) {
   const ph = r => r.plan ? L(PHASE[r.plan.phase][0], PHASE[r.plan.phase][1]) : '';
   const cols = rows.map((r, i) => {
     const cls = r.past ? 'past' : r.plan.phase === 'race' ? 'race' : r.plan.phase === 'deload' || r.plan.phase === 'taper' ? 'light' : 'plan';
-    const read = `${L('Неделя с', 'Week of')} ${fDay(r.wk)}: ${r.past ? L('было', 'did') + ' ' + fH(r.h) + (r.plan ? ` ${L('из', 'of')} ${fH(r.plan.hours)}` : '') : L('план', 'plan') + ' ' + fH(r.h)}${r.plan ? ' · ' + ph(r) : ''} · ${L('форма', 'form')} ${fH(form[i])}`;
+    const read = `${L('Неделя с', 'Week of')} ${fDay(r.wk)}: ${r.past ? (r.plan ? '' : L('до плана · ', 'before the plan · ')) + L('факт', 'actual') + ' ' + fH(r.h) + (r.plan ? ` ${L('из', 'of')} ${fH(r.plan.hours)}` : '') : L('план', 'plan') + ' ' + fH(r.h)}${r.plan ? ' · ' + ph(r) : ''} · ${L('форма', 'form')} ${fH(form[i])}`;
     return `<span class="ol-col" data-r="${esc(read)}"><i class="${cls}" style="height:${(r.h / max * 100).toFixed(1)}%"></i>${r.past && r.plan ? `<b class="ol-tick" style="bottom:${(r.plan.hours / max * 100).toFixed(1)}%"></b>` : ''}</span>`;
   }).join('');
   // Phase strip: an easy week belongs to the stretch it sits in; Garmin weeks are one stretch.
   const segs = [];
   rows.forEach((r, i) => {
-    const key = r.past ? 'past' : r.plan.phase === 'deload' && segs.length && segs[segs.length - 1].key !== 'past' ? segs[segs.length - 1].key : r.plan.phase;
+    const key = !r.plan ? 'before' : r.plan.phase === 'deload' && segs.length && segs[segs.length - 1].key !== 'before' ? segs[segs.length - 1].key : r.plan.phase;
     if (segs.length && segs[segs.length - 1].key === key) segs[segs.length - 1].n++; else segs.push({key, n: 1});
   });
-  const strip = segs.map(s => { const name = s.key === 'past' ? L('было', 'so far') : L(PHASE[s.key][0], PHASE[s.key][1]); return `<span style="flex:${s.n}" title="${esc(name)}">${s.n >= 3 || (s.key === 'race') ? esc(s.key === 'race' ? '★' : name) : ''}</span>`; }).join('');
+  const strip = segs.map(s => { const name = s.key === 'before' ? L('до плана', 'before the plan') : L(PHASE[s.key][0], PHASE[s.key][1]); return `<span style="flex:${s.n}" title="${esc(name)}">${s.n >= 3 || (s.key === 'race') ? esc(s.key === 'race' ? '★' : name) : ''}</span>`; }).join('');
   const line = form.map((v, i) => `${i + 0.5},${(100 - v / max * 100).toFixed(1)}`).join(' ');
   const def = now > 0 ? L(`Форма ${fH(f0)} → ${fH(f1)} в неделю к ${fDay(last.wk)}`, `Form ${fH(f0)} → ${fH(f1)} a week by ${fDay(last.wk)}`) : L(`Форма к ${fDay(last.wk)} — ${fH(f1)} в неделю`, `Form by ${fDay(last.wk)} — ${fH(f1)} a week`);
   return `<figure class="ol" aria-label="${esc(def)}">
-    <div class="ol-legend"><span><i class="sw past"></i>${L('было', 'done')}</span><span><i class="sw plan"></i>${L('план', 'plan')}</span><span><i class="sw light"></i>${L('легче', 'easier')}</span><span><i class="sw line"></i>${L('форма — средний объём за ~6 нед.', 'form — ~6-week average volume')}</span></div>
+    <div class="ol-legend"><span><i class="sw past"></i>${L('факт из Garmin', 'actual (Garmin)')}</span><span><i class="sw plan"></i>${L('план', 'plan')}</span><span><i class="sw light"></i>${L('легче', 'easier')}</span><span><i class="sw line"></i>${L('форма — средний объём за ~6 нед.', 'form — ~6-week average volume')}</span></div>
     <div class="ol-plot"><span class="ol-max num">${fH(max / 1.08)}</span>${cols}<svg viewBox="0 0 ${n} 100" preserveAspectRatio="none" aria-hidden="true"><polyline points="${line}"/></svg>${now > 0 ? `<span class="ol-now" style="left:${(now / n * 100).toFixed(2)}%"><em>${L('сейчас', 'now')}</em></span>` : ''}</div>
     <div class="ol-strip">${strip}</div>
     <div class="ol-dates num"><span>${fDay(rows[0].wk)}</span><span>${last.plan?.phase === 'race' && a?.eventDate ? `${a.eventName ? esc(a.eventName) + ' · ' : ''}${fDay(a.eventDate)}` : fDay(last.wk)}</span></div>
@@ -1659,12 +1659,13 @@ function healthHTML() {
 /* ---------- program tab: the plan's long view and how it's going ---------- */
 // One week counted the way the week screen counts it, plus what was skipped: done sessions (and extra Garmin ones)
 // against what was planned. Weeks before the app knew about them have no plan, only Garmin.
-function weekTally(wk) {
+function weekTally(wk, partial) {
   const week = state.weeks[wk], acts = weekActs(wk).filter(a => trainingSport(a.sport));
   const bySport = {};
   if (!week) { for (const a of acts) bySport[a.sport] = (bySport[a.sport] || 0) + a.min; return {wk, planned: 0, done: 0, planMin: 0, doneMin: acts.reduce((t, a) => t + a.min, 0), keyPlanned: 0, keyDone: 0, hardMin: 0, bySport}; }
   const effs = week.sessions.map(s => effective(wk, s)).filter(s => s.day != null && s.status !== 'dropped');
-  const counted = effs.filter(s => s.status === 'planned' || s.status === 'done' || s.status === 'skipped');
+  const ti = partial ? todayIdx(wk) : 7;
+  const counted = effs.filter(s => s.status === 'done' || s.status === 'skipped' || (s.status === 'planned' && s.day < ti));
   const done = effs.filter(s => s.status === 'done'), ex = extras(wk, week).filter(a => trainingSport(a.sport));
   for (const s of done) { const sp = KINDS[s.kind].sport; bySport[sp] = (bySport[sp] || 0) + (s.act?.min ?? s.min); }
   for (const a of ex) bySport[a.sport] = (bySport[a.sport] || 0) + a.min;
@@ -1688,44 +1689,50 @@ function programHTML() {
   else h += `<section class="pg-card"><p class="hint" style="padding-bottom:12px">${p ? L('У этого плана нет прогноза — он собран до появления «Программы». Пересобери план, и здесь появится путь по неделям.', 'This plan has no outlook — it predates this tab. Rebuild it to see the week-by-week path here.') : L('Собери план: цель, спорт и время — и здесь появится путь по неделям, фазы и прогноз формы.', 'Build a plan — goal, sports and time — and the week-by-week path, phases and form outlook show up here.')}</p>
     <div class="stack"><button class="btn primary" data-a="plan-open">${p ? L('Собрать план заново', 'Rebuild the plan') : L('Собрать план', 'Build a plan')}</button></div></section>`;
 
-  // How it's going: the last four finished weeks
-  const weeks = [4, 3, 2, 1].map(k => weekTally(ymd(addDays(parseYmd(cur), -7 * k))));
-  const now = weekTally(cur);
-  const planned = weeks.reduce((t, w) => t + w.planned, 0), done = weeks.reduce((t, w) => t + w.done, 0);
-  const avgH = weeks.reduce((t, w) => t + w.doneMin, 0) / 60 / 4, planH = weeks.reduce((t, w) => t + w.planMin, 0) / 60 / 4;
+  // How it's going: only since the program started. Before that there was no plan to keep, only a baseline.
+  const start = p?.start && p.start <= cur ? p.start : null;
+  const progWks = []; if (start) for (let wk = start; wk <= cur; wk = ymd(addDays(parseYmd(wk), 7))) progWks.push(wk);
+  const prog = progWks.slice(-8).map(wk => weekTally(wk, wk === cur));
+  const finished = prog.filter(w => w.wk < cur);
+  const planned = prog.reduce((t, w) => t + w.planned, 0), done = prog.reduce((t, w) => t + w.done, 0);
+  const nowT = prog.find(w => w.wk === cur) || weekTally(cur, true);
+  const base = [4, 3, 2, 1].map(k => ymd(addDays(parseYmd(start || cur), -7 * k))), baseH = base.reduce((t, wk) => t + actualHours(wk), 0) / 4;
   let streak = 0;
-  for (const w of [...weeks].reverse()) { if (w.planned && w.done / w.planned >= 0.8) streak++; else if (w.planned) break; }
-  const prev = [8, 7, 6, 5].map(k => actualHours(ymd(addDays(parseYmd(cur), -7 * k)))), prevH = prev.reduce((t, x) => t + x, 0) / 4;
-  const trend = prevH > 0.2 ? Math.round((avgH - prevH) / prevH * 100) : null;
+  for (const w of [...finished].reverse()) { if (w.planned && w.done / w.planned >= 0.8) streak++; else if (w.planned) break; }
+  const daysLeft = p?.goal === 'event' && p.eventDate ? Math.round((parseYmd(p.eventDate) - parseYmd(todayStr())) / 864e5) : null;
   const lines = [];
-  if (planned) lines.push(L(`За 4 недели сделано ${done} из ${planned} запланированных тренировок (${share(done, planned)}%).`, `In 4 weeks you did ${done} of ${planned} planned sessions (${share(done, planned)}%).`));
-  lines.push(L(`В среднем ${fH(avgH)} в неделю${planH ? `, по плану было ${fH(planH)}` : ''}.`, `On average ${fH(avgH)} a week${planH ? `, against ${fH(planH)} planned` : ''}.`));
-  if (trend != null) lines.push(trend >= 5 ? L(`Объём растёт: +${trend}% к предыдущим 4 неделям.`, `Volume is rising: +${trend}% on the 4 weeks before.`) : trend <= -5 ? L(`Объём ниже предыдущих 4 недель на ${-trend}% — если это не разгрузка, стоит посмотреть, что мешает.`, `Volume is ${-trend}% below the 4 weeks before — unless it’s an easy block, worth seeing what’s in the way.`) : L('Объём ровный — как и предыдущие 4 недели.', 'Volume is level with the 4 weeks before.'));
-  if (ow) lines.push(L(`Сейчас — ${PHASE[ow.phase][0].toLowerCase()}: ориентир ${fH(ow.hours)} на этой неделе, сделано ${fH(now.doneMin / 60)}.`, `Now: ${PHASE[ow.phase][1].toLowerCase()} — target ${fH(ow.hours)} this week, ${fH(now.doneMin / 60)} done.`));
-  const maxMin = Math.max(1, ...weeks.map(w => Math.max(w.planMin, w.doneMin)));
+  if (!start) lines.push(L('Программа ещё не началась — здесь будет видно, как она идёт, с первой её недели.', 'The program hasn’t started — this shows how it goes from its first week.'));
+  else if (progWks.length === 1) lines.push(L(`Программа началась на этой неделе (${fDay(start)}).`, `The program started this week (${fDay(start)}).`) + ' ' + (planned ? L(`Из тренировок, которые уже должны были пройти, сделано ${done} из ${planned}.`, `Of the sessions due so far, ${done} of ${planned} are done.`) : L('Тренировок, которые уже должны были пройти, пока не было.', 'No sessions were due yet.')));
+  else lines.push(L(`С начала программы (${fDay(start)}) прошло ${progWks.length} нед.: сделано ${done} из ${planned} тренировок (${share(done, planned)}%)${finished.length ? `, недель на 80% и выше подряд — ${streak}` : ''}.`, `Since the program started (${fDay(start)}), ${progWks.length} weeks: ${done} of ${planned} sessions done (${share(done, planned)}%)${finished.length ? `, weeks at 80%+ in a row — ${streak}` : ''}.`));
+  if (ow) lines.push(L(`Эта неделя — ${PHASE[ow.phase][0].toLowerCase()}, ориентир ${fH(ow.hours)}; сделано ${fH(nowT.doneMin / 60)}.`, `This week: ${PHASE[ow.phase][1].toLowerCase()}, target ${fH(ow.hours)}; ${fH(nowT.doneMin / 60)} done.`));
+  if (baseH > 0.2) lines.push(L(`Точка отсчёта — 4 недели до программы: в среднем ${fH(baseH)} в неделю по Garmin.`, `Baseline — the 4 weeks before the program: ${fH(baseH)} a week on average, from Garmin.`));
+  if (daysLeft != null && daysLeft >= 0) lines.push(L(`До старта ${daysLeft} дн.`, `${daysLeft} days to the event.`));
+  const maxMin = Math.max(1, ...prog.map(w => Math.max(w.planMin, w.doneMin)), (ow?.hours || 0) * 60);
   h += `<section class="pg-card"><div class="section-title" style="padding-top:0">${L('Как идёт', 'How it’s going')}</div>
-    <div class="pg-tiles"><div><b class="num">${planned ? share(done, planned) + '%' : '—'}</b><span>${L('плана выполнено', 'of the plan done')}</span></div>
-      <div><b class="num">${streak}</b><span>${L('недель подряд ≥80%', 'weeks in a row ≥80%')}</span></div>
-      <div><b class="num">${trend == null ? '—' : (trend > 0 ? '+' : '') + trend + '%'}</b><span>${L('объём к прошлому месяцу', 'volume vs the month before')}</span></div></div>
+    <div class="pg-tiles"><div><b class="num">${ow ? `${ow.week}/${ow.of}` : start ? progWks.length : '—'}</b><span>${L('неделя программы', 'program week')}</span></div>
+      <div><b class="num">${planned ? `${done}/${planned}` : '—'}</b><span>${L('тренировок сделано из тех, что уже прошли', 'sessions done of those due so far')}</span></div>
+      <div><b class="num">${fH(nowT.doneMin / 60).replace(/ ?[чh]$/, '')}${ow ? `<span class="pg-of">/${fH(ow.hours)}</span>` : `<span class="pg-of">${L(' ч', ' h')}</span>`}</b><span>${L('на этой неделе', 'this week')}</span></div></div>
     <p class="pg-summary">${esc(lines.join(' '))}</p>
-    <div class="pg-weeks">${weeks.map(w => `<div class="pg-week"><span class="pg-wk num">${fDay(w.wk)}</span><span class="pg-bar">${w.planMin ? `<i class="plan" style="width:${(w.planMin / maxMin * 100).toFixed(1)}%"></i>` : ''}<i class="done" style="width:${(w.doneMin / maxMin * 100).toFixed(1)}%"></i></span><span class="pg-n num">${w.planned ? `${w.done}/${w.planned}` : fH(w.doneMin / 60)}</span></div>`).join('')}</div>
-    ${planned ? `<p class="pg-legend"><span><i class="sw done"></i>${L('сделано', 'done')}</span><span><i class="sw plan"></i>${L('план', 'planned')}</span><span class="muted">${L('справа — тренировок из плана', 'right: planned sessions done')}</span></p>` : `<p class="pg-legend"><span class="muted">${L('Недели до плана — по Garmin, часы в неделю', 'Weeks before the plan — from Garmin, hours a week')}</span></p>`}
+    ${prog.length ? `<div class="pg-weeks">${prog.map(w => { const target = (outlookWeek(w.wk)?.hours || 0) * 60 || w.planMin; return `<div class="pg-week"><span class="pg-wk num">${w.wk === cur ? L('эта', 'this') : fDay(w.wk)}</span><span class="pg-bar">${target ? `<i class="plan" style="width:${(target / maxMin * 100).toFixed(1)}%"></i>` : ''}<i class="done" style="width:${(w.doneMin / maxMin * 100).toFixed(1)}%"></i></span><span class="pg-n num">${w.planned ? `${w.done}/${w.planned}` : '—'}</span></div>`; }).join('')}</div>
+    <p class="pg-legend"><span><i class="sw done"></i>${L('сделано, ч', 'done, h')}</span><span><i class="sw plan"></i>${L('ориентир недели', 'week target')}</span><span class="muted">${L('справа — тренировок сделано', 'right: sessions done')}</span></p>` : ''}
     <p class="hint" style="padding-top:8px">${L('Главная метрика — доля состоявшихся недель, а не идеальная тренировка: неделя на 80% — уже хорошая неделя.', 'The metric that matters is weeks that happened, not perfect sessions: an 80% week is a good week.')}</p></section>`;
 
-  // Sport balance over the same four weeks, against the usual week
-  const sum = {}; for (const w of weeks) for (const [sp, m] of Object.entries(w.bySport)) sum[sp] = (sum[sp] || 0) + m;
+  // Sport balance: what the last four weeks actually looked like, against the usual week
+  const recent = [4, 3, 2, 1].map(k => weekTally(ymd(addDays(parseYmd(cur), -7 * k))));
+  const sum = {}; for (const w of recent) for (const [sp, m] of Object.entries(w.bySport)) sum[sp] = (sum[sp] || 0) + m;
   const total = Object.values(sum).reduce((t, m) => t + m, 0);
   const tpl = {}; for (const t of state.template) { const sp = KINDS[t.kind].sport; tpl[sp] = (tpl[sp] || 0) + t.min; }
   const tplTotal = Object.values(tpl).reduce((t, m) => t + m, 0);
   const sports = [...new Set([...Object.keys(sum), ...Object.keys(tpl)])].filter(sp => SPORTS[sp]).sort((a, b) => (sum[b] || 0) - (sum[a] || 0));
-  if (total) h += `<section class="pg-card"><div class="section-title" style="padding-top:0">${L('Баланс за 4 недели', 'Balance over 4 weeks')}</div>
+  if (total) h += `<section class="pg-card"><div class="section-title" style="padding-top:0">${L('Баланс: последние 4 недели', 'Balance: the last 4 weeks')}</div>
     <div class="prog-bar pg-mix">${sports.filter(sp => sum[sp]).map(sp => `<i class="${sp}" style="width:${(sum[sp] / total * 100).toFixed(1)}%"></i>`).join('')}</div>
-    <div class="list pg-sports">${sports.map(sp => `<div class="row"><span class="t"><b><span class="dot pg-dot ${sp}"></span>${esc(L(SPORTS[sp][0], SPORTS[sp][1]))}</b><span>${tplTotal && tpl[sp] ? L(`по плану ${share(tpl[sp], tplTotal)}%`, `${share(tpl[sp], tplTotal)}% planned`) : L('вне плана', 'not in the plan')}</span></span><span class="num pg-val">${fH((sum[sp] || 0) / 60 / 4)}<span class="muted">${L('/нед', '/wk')} · ${share(sum[sp] || 0, total)}%</span></span></div>`).join('')}</div></section>`;
+    <div class="list pg-sports">${sports.map(sp => `<div class="row"><span class="t"><b><span class="dot pg-dot ${sp}"></span>${esc(L(SPORTS[sp][0], SPORTS[sp][1]))}</b><span>${tplTotal && tpl[sp] ? L(`в обычной неделе ${share(tpl[sp], tplTotal)}%`, `${share(tpl[sp], tplTotal)}% of the usual week`) : L('нет в обычной неделе', 'not in the usual week')}</span></span><span class="num pg-val">${fH((sum[sp] || 0) / 60 / 4)}<span class="muted">${L('/нед', '/wk')} · ${share(sum[sp] || 0, total)}%</span></span></div>`).join('')}</div>
+    <p class="hint" style="padding-top:8px">${L('По Garmin, включая недели до программы — чтобы было видно, откуда ты стартуешь.', 'From Garmin, including weeks before the program — to show where you start from.')}</p></section>`;
 
-  // Intensity: key sessions and the share of hard work
-  const keyP = weeks.reduce((t, w) => t + w.keyPlanned, 0), keyD = weeks.reduce((t, w) => t + w.keyDone, 0);
-  const hardMin = weeks.reduce((t, w) => t + w.hardMin, 0), hardShare = total ? Math.round(hardMin / total * 100) : 0;
-  if (keyP || hardMin) h += `<section class="pg-card"><div class="section-title" style="padding-top:0">${L('Интенсивность', 'Intensity')}</div>
+  // Intensity: key sessions and the share of hard work, since the program started
+  const keyP = prog.reduce((t, w) => t + w.keyPlanned, 0), keyD = prog.reduce((t, w) => t + w.keyDone, 0);
+  const progMin = prog.reduce((t, w) => t + w.doneMin, 0), hardMin = prog.reduce((t, w) => t + w.hardMin, 0), hardShare = progMin ? Math.round(hardMin / progMin * 100) : 0;
+  if (keyP || hardMin) h += `<section class="pg-card"><div class="section-title" style="padding-top:0">${L('Интенсивность с начала программы', 'Intensity since the program started')}</div>
     <div class="pg-tiles two"><div><b class="num">${keyP ? `${keyD}/${keyP}` : '—'}</b><span>${L('главных тренировок сделано', 'key sessions done')}</span></div><div><b class="num">${hardShare}%</b><span>${L('времени — тяжёлые', 'of the time hard')}</span></div></div>
     <p class="hint">${hardShare > 25 ? L('Тяжёлого больше обычного ориентира 15–20% — следи, чтобы лёгкие дни оставались лёгкими.', 'More hard work than the usual 15–20% — keep the easy days easy.') : L('Ориентир для любителя — 15–20% времени тяжёлых тренировок, остальное — лёгкое (правило 3, уровень B).', 'The amateur guide is 15–20% of time hard, the rest easy (rule 3, grade B).')}</p></section>`;
 

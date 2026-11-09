@@ -468,3 +468,4 @@ a.btn{text-decoration:none}
 .pg-val{font-size:16px;font-weight:600;white-space:nowrap;text-align:right}
 .pg-val .muted{font-weight:400;font-size:13px;margin-left:2px}
 .row .t .pg-dot{display:inline-block;vertical-align:middle;margin:0 8px 2px 0}
+.pg-of{font-size:15px;font-weight:500;color:var(--muted);margin-left:2px}
