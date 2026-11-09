@@ -88,8 +88,8 @@ a.btn{text-decoration:none}
 
 /* ---------- training week ---------- */
 /* Sport colours: one categorical set, checked with the dataviz validator for every pair (sports sit side by side), light and dark. */
-:root{--bike:#2a78d6;--run:#eb6834;--climb:#1baf7a;--gym:#851980;--hike:#7e4a09;--walk:#8C8C86;--busy:#DADAD3;--cmd:76px}
-@media (prefers-color-scheme:dark){:root{--bike:#3987e5;--run:#d95926;--climb:#199e70;--gym:#a5559f;--hike:#845012;--walk:#8E8E88;--busy:#3D3D39}}
+:root{--swim:#0b93a8;--bike:#2a78d6;--run:#eb6834;--climb:#1baf7a;--gym:#851980;--hike:#7e4a09;--walk:#8C8C86;--busy:#DADAD3;--cmd:76px}
+@media (prefers-color-scheme:dark){:root{--swim:#1aa5ba;--bike:#3987e5;--run:#d95926;--climb:#199e70;--gym:#a5559f;--hike:#845012;--walk:#8E8E88;--busy:#3D3D39}}
 .screen{padding-bottom:calc(var(--cmd) + 32px + env(safe-area-inset-bottom,0px))}
 .weeknav{display:flex;align-items:center;gap:2px;margin-left:-6px}
 .icon-btn{padding:6px;min-height:36px;min-width:36px;justify-content:center}
@@ -131,12 +131,12 @@ a.btn{text-decoration:none}
 .tl .b{background:var(--busy)}
 .tl .w{background:color-mix(in srgb,var(--busy) 45%,var(--fill))}
 .tl .s{background:var(--c,var(--accent))}
-.tl .hike{--c:var(--hike)}.tl .bike{--c:var(--bike)}.tl .run{--c:var(--run)}.tl .gym{--c:var(--gym)}.tl .climb{--c:var(--climb)}.tl .walk{--c:var(--walk)}
+.tl .swim{--c:var(--swim)}.tl .hike{--c:var(--hike)}.tl .bike{--c:var(--bike)}.tl .run{--c:var(--run)}.tl .gym{--c:var(--gym)}.tl .climb{--c:var(--climb)}.tl .walk{--c:var(--walk)}
 .tl .x{background:transparent;box-shadow:inset 0 0 0 2px var(--c,var(--accent))}
 .tl .now{width:2px;border-radius:1px;background:var(--danger)}
 .sess{display:flex;gap:12px;align-items:flex-start;width:100%;min-height:52px;text-align:left;padding:12px 0 8px}
 .dot{flex:none;width:10px;height:10px;border-radius:50%;margin-top:8px;background:var(--walk)}
-.dot.hike{background:var(--hike)}.dot.bike{background:var(--bike)}.dot.run{background:var(--run)}.dot.gym{background:var(--gym)}.dot.climb{background:var(--climb)}
+.dot.swim{background:var(--swim)}.dot.hike{background:var(--hike)}.dot.bike{background:var(--bike)}.dot.run{background:var(--run)}.dot.gym{background:var(--gym)}.dot.climb{background:var(--climb)}
 .sess .t{flex:1;min-width:0}
 .sess .t b{font-weight:500}
 .sess .t .meta{font-size:16px;color:var(--ink-2);font-variant-numeric:tabular-nums}
@@ -201,7 +201,7 @@ a.btn{text-decoration:none}
 .chart figcaption .muted{font-weight:400;font-size:13px}
 .plot{position:relative;height:110px}
 .plot svg{display:block;width:100%;height:100%;overflow:visible}
-.act{--sc:var(--accent)}.act[data-sport=hike]{--sc:var(--hike)}.act[data-sport=bike]{--sc:var(--bike)}.act[data-sport=run]{--sc:var(--run)}.act[data-sport=gym]{--sc:var(--gym)}.act[data-sport=climb]{--sc:var(--climb)}
+.act{--sc:var(--accent)}.act[data-sport=swim]{--sc:var(--swim)}.act[data-sport=hike]{--sc:var(--hike)}.act[data-sport=bike]{--sc:var(--bike)}.act[data-sport=run]{--sc:var(--run)}.act[data-sport=gym]{--sc:var(--gym)}.act[data-sport=climb]{--sc:var(--climb)}
 .plot .line{fill:none;stroke:var(--sc);stroke-width:2;vector-effect:non-scaling-stroke;stroke-linejoin:round;stroke-linecap:round}
 .plot .area{fill:color-mix(in srgb,var(--ink) 10%,transparent);stroke:none}
 .chart[data-key="el"] .line{stroke:var(--muted)}
@@ -220,7 +220,7 @@ a.btn{text-decoration:none}
 .splits th:not(:first-child),.splits td:not(:first-child){text-align:right}
 
 /* ---------- week, v2: one hero, one progress line, one row per day ---------- */
-.hike{--sc:var(--hike)}.bike{--sc:var(--bike)}.run{--sc:var(--run)}.gym{--sc:var(--gym)}.climb{--sc:var(--climb)}.walk{--sc:var(--walk)}
+.swim{--sc:var(--swim)}.hike{--sc:var(--hike)}.bike{--sc:var(--bike)}.run{--sc:var(--run)}.gym{--sc:var(--gym)}.climb{--sc:var(--climb)}.walk{--sc:var(--walk)}
 .hero{position:relative;background:color-mix(in srgb,var(--sc) 9%,var(--bg));border-radius:22px;padding:18px 18px 16px;margin:4px 0 14px;overflow:hidden}
 .hero::before{content:"";position:absolute;left:0;top:18px;bottom:18px;width:4px;border-radius:0 3px 3px 0;background:var(--sc)}
 .hero-eyebrow{font-size:15px;font-weight:600;color:color-mix(in srgb,var(--sc) 75%,var(--ink))}
@@ -330,3 +330,50 @@ a.btn{text-decoration:none}
 .chat-compose{display:flex;gap:8px;align-items:flex-end;padding-top:4px}
 .chat-compose textarea{flex:1;min-width:0;border:0;background:var(--fill);border-radius:14px;padding:13px 16px;font:inherit;font-size:17px;line-height:1.4;min-height:50px;max-height:140px;resize:none;outline:none;color:var(--ink)}
 .send.stop{background:var(--fill);color:var(--ink)}
+
+/* plan: wizard, week preview, proposal cards */
+.wiz-title{font-size:17px;font-weight:600}
+.wiz{padding-bottom:12px}
+.wiz-dots{display:flex;gap:6px;margin:6px 0 14px}
+.wiz-dots i{flex:1;height:4px;border-radius:2px;background:var(--line)}
+.wiz-dots i.on{background:var(--accent)}
+.wiz-h{font-family:var(--display);font-size:24px;font-weight:700;letter-spacing:-.01em;line-height:1.2;margin:4px 0 10px}
+.opts{display:flex;flex-direction:column;gap:8px}
+.opt{display:flex;flex-direction:column;align-items:flex-start;gap:2px;text-align:left;padding:14px 16px;border-radius:14px;background:var(--fill);min-height:64px;box-shadow:inset 0 0 0 2px transparent}
+.opt b{font-size:17px;font-weight:600}
+.opt span{font-size:15px;color:var(--muted)}
+.opt[aria-pressed="true"]{background:var(--accent-wash);box-shadow:inset 0 0 0 2px var(--accent)}
+.wiz-row{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:10px;margin-top:12px}
+.wiz-row input{width:100%;min-width:0}
+.wiz-go{padding-top:20px}
+.chips-row.wrap{flex-wrap:wrap;overflow:visible;padding-top:6px}
+.sport-chip{display:inline-flex;align-items:center;gap:6px}
+.chip[aria-pressed="true"] .dot{box-shadow:0 0 0 2px var(--bg)}
+.wiz-notes{width:100%;border:0;background:var(--fill);border-radius:12px;padding:12px;font:inherit;font-size:17px;color:var(--ink);resize:vertical}
+.wiz-wait{display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center;padding:48px 8px}
+.wiz-wait b{font-size:17px}
+.plan-why{margin:0 0 4px;padding-left:20px;font-size:15px;line-height:1.45;color:var(--ink-2)}
+.plan-why li+li{margin-top:4px}
+.plan-review{font-size:15px;line-height:1.45;color:var(--ink-2);background:var(--fill);border-radius:12px;padding:12px 14px;margin:4px 0 12px}
+.plan-total{float:right;text-transform:none;letter-spacing:0;color:var(--ink-2)}
+.plan-list{border-top:1px solid var(--line);width:100%}
+.plan-row{display:grid;grid-template-columns:36px 1fr;gap:8px;padding:10px 0;border-bottom:1px solid var(--line)}
+.plan-day{font-size:15px;color:var(--muted);padding-top:1px}
+.plan-what{display:flex;flex-direction:column;gap:2px;min-width:0}
+.plan-name{display:flex;align-items:center;gap:8px;font-size:17px;font-weight:500}
+.plan-min{margin-left:auto;font-size:15px;color:var(--ink-2);font-weight:400}
+.plan-key{font-size:12px;font-weight:600;color:var(--accent);background:var(--accent-wash);border-radius:6px;padding:2px 6px}
+.plan-detail{font-size:14px;line-height:1.35;color:var(--muted)}
+.plan-base{margin-top:16px}
+.plan-base summary{cursor:pointer;font-size:15px;color:var(--accent);padding:8px 0;list-style:none}
+.proposal .plan-list{margin:2px 0 4px}
+.proposal .plan-name{font-size:15px}
+.card.plan-cta{background:var(--accent-wash)}
+.card.plan-prop{display:flex;flex-direction:column;align-items:flex-start;gap:3px;width:100%;text-align:left;background:var(--accent-wash);font-size:15px}
+.card.plan-prop b{font-size:17px;font-weight:600;line-height:1.3}
+.plan-prop-eyebrow{font-size:13px;font-weight:600;color:var(--accent);text-transform:uppercase;letter-spacing:.05em}
+.card.plan-prop .nudge-go{margin-top:4px}
+.quiet-nudge{color:var(--muted)}
+.plan-note{font-size:15px;line-height:1.4;color:var(--ink-2);margin:14px 0 0}
+.plan-note span{font-weight:600;color:var(--accent)}
+.btn:disabled{opacity:.35}
