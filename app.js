@@ -822,6 +822,7 @@ function garminCtx() {
   }
   return {linked: !!state.local.acts?.linked, recent_21d: recent, hours_by_week: weeks};
 }
+const zonesCtx = () => { const z = state.zones || {}, ep = typeof easyPace === 'function' ? easyPace() : null; return {ftp_w: z.ftp || null, run_threshold_pace: z.thr || null, threshold_hr: z.lthr || null, usual_run_pace_garmin: ep ? paceFmt(ep) : null, note: 'если есть — ставь в detail ватты/темп/пульс'}; };
 const templateCtx = () => state.template.map(t => ({day: DAYS_RU[t.day], kind: KINDS[t.kind].ru, min: t.min, tod: t.tod, anchor: t.anchor, ...(t.detail ? {detail: t.detail} : {})}));
 function chatContext(focus) {
   const wk = view.wk, week = state.weeks[wk], ti = todayIdx(wk), now = new Date(), cur = ymd(mondayOf(now)), nwk = ymd(addDays(mondayOf(now), 7));
@@ -833,6 +834,7 @@ function chatContext(focus) {
     garmin: garminCtx(),
     plan: state.plan ? {...answersCtx(state.plan), summary: state.plan.summary, since: state.plan.start, ...(state.plan.outlook ? {outlook: state.plan.outlook.headline, outlook_this_week: outlookWeek(wk)} : {})} : 'план не собран',
     template: templateCtx(),
+    zones: zonesCtx(),
     sport_answers: state.asks,
     ...(prop?.status === 'new' ? {next_week_proposal: {monday: nwk, summary: prop.summary, sessions: prop.sessions.map(x => ({day: DAYS_RU[x.day], kind: KINDS[x.kind].ru, min: x.min, detail: x.detail}))}} : {}),
     ...(cur !== wk && state.weeks[cur] ? {current_week: {monday: cur, note: 'неделя, которая идёт сейчас; правки предлагаются для plan_week', sessions: state.weeks[cur].sessions.map(s => sessCtx(s, cur))}} : {}),
@@ -1093,6 +1095,7 @@ function planContext(mode, t) {
     garmin_recent: garminCtx().recent_21d,
     pain: painCtx(),
     current_template: templateCtx(),
+    zones: zonesCtx(),
   };
   if (mode === 'plan') ctx.answers = answersCtx(wiz.a);
   else {
@@ -1713,7 +1716,7 @@ function programHTML() {
       <div><b class="num">${planned ? `${done}/${planned}` : '—'}</b><span>${L('тренировок сделано из тех, что уже прошли', 'sessions done of those due so far')}</span></div>
       <div><b class="num">${fH(nowT.doneMin / 60).replace(/ ?[чh]$/, '')}${ow ? `<span class="pg-of">/${fH(ow.hours)}</span>` : `<span class="pg-of">${L(' ч', ' h')}</span>`}</b><span>${L('на этой неделе', 'this week')}</span></div></div>
     <p class="pg-summary">${esc(lines.join(' '))}</p>
-    ${prog.length ? `<div class="pg-weeks">${prog.map(w => { const target = (outlookWeek(w.wk)?.hours || 0) * 60 || w.planMin; return `<div class="pg-week"><span class="pg-wk num">${w.wk === cur ? L('эта', 'this') : fDay(w.wk)}</span><span class="pg-bar">${target ? `<i class="plan" style="width:${(target / maxMin * 100).toFixed(1)}%"></i>` : ''}<i class="done" style="width:${(w.doneMin / maxMin * 100).toFixed(1)}%"></i></span><span class="pg-n num">${w.planned ? `${w.done}/${w.planned}` : '—'}</span></div>`; }).join('')}</div>
+    ${prog.length ? `<div class="pg-weeks">${prog.map(w => { const target = (outlookWeek(w.wk)?.hours || 0) * 60 || w.planMin; return `<button class="pg-week" data-a="review" data-wk="${w.wk}"><span class="pg-wk num">${w.wk === cur ? L('эта', 'this') : fDay(w.wk)}</span><span class="pg-bar">${target ? `<i class="plan" style="width:${(target / maxMin * 100).toFixed(1)}%"></i>` : ''}<i class="done" style="width:${(w.doneMin / maxMin * 100).toFixed(1)}%"></i></span><span class="pg-n num">${w.planned ? `${w.done}/${w.planned}` : '—'}</span></button>`; }).join('')}</div>
     <p class="pg-legend"><span><i class="sw done"></i>${L('сделано, ч', 'done, h')}</span><span><i class="sw plan"></i>${L('ориентир недели', 'week target')}</span><span class="muted">${L('справа — тренировок сделано', 'right: sessions done')}</span></p>` : ''}
     <p class="hint" style="padding-top:8px">${L('Главная метрика — доля состоявшихся недель, а не идеальная тренировка: неделя на 80% — уже хорошая неделя.', 'The metric that matters is weeks that happened, not perfect sessions: an 80% week is a good week.')}</p></section>`;
 
@@ -1744,6 +1747,179 @@ function programHTML() {
     h += basisHTML(p.outlook.basis, false);
   }
   return h + '</main>';
+}
+
+/* ---------- session guide: how to do it, in your numbers, and what the rulebook says is critical ---------- */
+// Thresholds the person enters (state.zones: ftp W, thr run pace s/km, lthr bpm). Without them targets fall back to
+// effort (RPE, talk test) and the usual easy pace Garmin shows. Rule numbers and grades are the rulebook's.
+const paceFmt = sec => `${Math.floor(sec / 60)}:${pad(Math.round(sec % 60))}`;
+const parsePace = v => { const m = String(v || '').trim().match(/^(\d{1,2})[:.](\d{2})$/); return m ? +m[1] * 60 + +m[2] : null; };
+function runsSince(days) {
+  const since = ymd(addDays(new Date(), -days));
+  return (state.local.acts?.list || []).filter(a => a.sport === 'run' && a.start.slice(0, 10) >= since && a.min >= 15);
+}
+// The usual easy pace: the median of runs over the last 8 weeks (most of a runner's runs are easy).
+function easyPace() {
+  const xs = runsSince(56).filter(a => a.km >= 3).map(a => a.min * 60 / a.km).sort((a, b) => a - b);
+  return xs.length >= 3 ? xs[Math.floor(xs.length / 2)] : null;
+}
+const longestRun30 = () => Math.max(0, ...runsSince(30).map(a => a.min));
+const W = (f, a, b) => `${Math.round(f * a / 5) * 5}–${Math.round(f * b / 5) * 5} Вт`.replace(' Вт', L(' Вт', ' W'));
+const isKey = s => s.key || KINDS[s.kind].hard || s.kind.endsWith('_long');
+function sessionGuide(s) {
+  const z = state.zones || {}, ftp = +z.ftp || null, thr = parsePace(z.thr), lthr = +z.lthr || null, ep = easyPace(), k = s.kind;
+  const g = {goal: '', steps: [], targets: [], critical: []};
+  const crit = (no, grade, ru, en) => g.critical.push({no, grade, text: L(ru, en)});
+  const easyRun = () => {
+    if (thr) g.targets.push(L(`Темп ${paceFmt(thr * 1.15)}–${paceFmt(thr * 1.3)}/км (порог ${paceFmt(thr)}/км + 15–30%)`, `Pace ${paceFmt(thr * 1.15)}–${paceFmt(thr * 1.3)}/km (threshold ${paceFmt(thr)}/km + 15–30%)`));
+    else if (ep) g.targets.push(L(`Темп около ${paceFmt(ep)}/км — твой обычный по Garmin; если пульс ползёт вверх — медленнее`, `Pace around ${paceFmt(ep)}/km — your usual from Garmin; slow down if HR creeps up`));
+    if (lthr) g.targets.push(L(`Пульс до ${Math.round(lthr * 0.89)} (≈89% пульса на пороге)`, `HR under ${Math.round(lthr * 0.89)} (≈89% of threshold HR)`));
+    g.targets.push(L('RPE 2–3 из 10: говоришь полными предложениями', 'RPE 2–3 of 10: you can talk in full sentences'));
+  };
+  const runCap = () => { const lr = longestRun30(); if (lr) crit(69, 'B', `Не дольше ${Math.round(lr * 1.1)} мин: самая длинная пробежка за 30 дней — ${lr} мин, +10% — предел. Пропущенное не докидывать.`, `No longer than ${Math.round(lr * 1.1)} min: your longest run in 30 days was ${lr} min; +10% is the cap. Don’t make up missed volume.`); };
+  if (k === 'run_easy' || k === 'run_long') {
+    g.goal = k === 'run_long' ? L('Выносливость и привычка к времени на ногах', 'Endurance and time on feet') : L('Аэробная база без лишней усталости', 'Aerobic base without extra fatigue');
+    g.steps = [[L('Разминка', 'Warm-up'), L('5 мин ходьба или очень лёгкий бег', '5 min walk or very easy jog')], [L('Основное', 'Main'), L(`${fDur(Math.max(15, s.min - 10))} ровно, в лёгкой зоне`, `${fDur(Math.max(15, s.min - 10))} steady, easy`)], [L('Заминка', 'Cool-down'), L('5 мин спокойно, лёгкая растяжка икр', '5 min easy, light calf stretch')]];
+    easyRun(); runCap();
+    crit(22, 'B', 'Лёгкое — действительно лёгкое. Если больше 20–30% времени выше Z2 — бежишь слишком быстро.', 'Easy means easy. More than 20–30% of the time above Z2 means you’re going too fast.');
+    if (k === 'run_long') crit(7, 'C', 'Не в один день с длинным велом; если подряд — бег лёгкий.', 'Not on the same day as a long ride; back to back, keep the run easy.');
+  } else if (k === 'run_q') {
+    g.goal = L('Скорость на пороге и VO2max', 'Threshold speed and VO2max');
+    g.steps = [[L('Разминка', 'Warm-up'), L('15 мин лёгко + 3–4 ускорения по 20 с', '15 min easy + 3–4 × 20 s strides')], [L('Основное', 'Main'), s.detail || L('5×3 мин тяжело (RPE 8), между — 2 мин трусцой', '5×3 min hard (RPE 8), 2 min jog between')], [L('Заминка', 'Cool-down'), L('10 мин лёгко', '10 min easy')]];
+    if (thr) g.targets.push(L(`Пороговые отрезки: ${paceFmt(thr - 5)}–${paceFmt(thr + 5)}/км · отрезки 3–5 мин: ${paceFmt(thr - 20)}–${paceFmt(thr - 10)}/км`, `Threshold reps: ${paceFmt(thr - 5)}–${paceFmt(thr + 5)}/km · 3–5 min reps: ${paceFmt(thr - 20)}–${paceFmt(thr - 10)}/km`));
+    if (lthr) g.targets.push(L(`Пульс к концу отрезков ${Math.round(lthr * 0.95)}–${Math.round(lthr * 1.02)}`, `HR by the end of reps ${Math.round(lthr * 0.95)}–${Math.round(lthr * 1.02)}`));
+    g.targets.push(L('RPE 7 на пороге, 8–9 на коротких отрезках; последний не хуже первого', 'RPE 7 at threshold, 8–9 on short reps; the last as good as the first'));
+    crit(23, 'A/B', 'Полноценная VO2max-сессия — не меньше 15 мин работы в отрезках от 2 мин (5×3, 4×4).', 'A real VO2max session is at least 15 min of work in reps of 2 min or more (5×3, 4×4).');
+    crit(39, 'C/B', 'Не в соседний день с другой тяжёлой; переносить только туда, где нет тяжёлого накануне и наутро.', 'Not next to another hard day; move it only where there’s nothing hard the day before or after.');
+    crit(83, 'B', 'Не раньше чем через 24 ч после тяжёлого зала на ноги.', 'Not within 24 h of heavy leg work in the gym.');
+    runCap();
+  } else if (k === 'bike_easy' || k === 'bike_long') {
+    g.goal = k === 'bike_long' ? L('Выносливость и умение ехать долго', 'Endurance and riding long') : L('Лёгкий объём и восстановление', 'Easy volume and recovery');
+    g.steps = [[L('Разминка', 'Warm-up'), L('10 мин легко, каденс 90+', '10 min easy, cadence 90+')], [L('Основное', 'Main'), s.detail || L('Ровно в Z2, в подъёмы не «рвать»', 'Steady Z2, don’t surge on climbs')], [L('Заминка', 'Cool-down'), L('5–10 мин легко', '5–10 min easy')]];
+    if (ftp) g.targets.push(L(`Мощность ${W(ftp, 0.56, 0.75)} (56–75% FTP ${ftp} Вт)`, `Power ${W(ftp, 0.56, 0.75)} (56–75% of FTP ${ftp} W)`));
+    g.targets.push(L('Каденс 85–95, RPE 2–3', 'Cadence 85–95, RPE 2–3'));
+    if (s.min > 75) crit(106, 'B/C', `Питание: ${s.min >= 150 ? 'до 90 г углеводов в час (глюкоза + фруктоза), если ЖКТ привык' : '30–60 г углеводов в час'}, начать в первые 20–30 мин.`, `Fuel: ${s.min >= 150 ? 'up to 90 g carbs an hour (glucose + fructose) if your gut is trained' : '30–60 g carbs an hour'}, starting in the first 20–30 min.`);
+    if (k === 'bike_long') crit(84, 'C', 'Накануне — без тяжёлого зала на ноги.', 'No heavy leg day the day before.');
+    crit(26, 'B/C', 'На станке — по мощности (ERG), с вентилятором; дрейф пульса больше 5–8% при той же мощности — снизить цель.', 'Indoors ride by power (ERG) with a fan; HR drifting over 5–8% at the same power — lower the target.');
+  } else if (k === 'bike_q') {
+    g.goal = L('Мощность на пороге (FTP)', 'Threshold power (FTP)');
+    g.steps = [[L('Разминка', 'Warm-up'), L('15 мин с 2–3 ускорениями по 1 мин', '15 min with 2–3 × 1 min pick-ups')], [L('Основное', 'Main'), s.detail || L('3×12 мин sweet spot, между — 4 мин легко', '3×12 min sweet spot, 4 min easy between')], [L('Заминка', 'Cool-down'), L('10 мин легко', '10 min easy')]];
+    if (ftp) g.targets.push(L(`Sweet spot ${W(ftp, 0.88, 0.94)} · порог ${W(ftp, 0.95, 1.0)} · VO2 ${W(ftp, 1.06, 1.2)}`, `Sweet spot ${W(ftp, 0.88, 0.94)} · threshold ${W(ftp, 0.95, 1.0)} · VO2 ${W(ftp, 1.06, 1.2)}`));
+    else g.targets.push(L('Без FTP: sweet spot — RPE 6–7, «тяжело, но говорить короткими фразами можно»', 'Without FTP: sweet spot is RPE 6–7, hard but short phrases are possible'));
+    crit(25, 'B/C', 'Интервалы — по мощности; FTP — оценка ±5%; длинные пороговые блоки 88–95% FTP.', 'Intervals by power; FTP is an estimate ±5%; long threshold blocks at 88–95% FTP.');
+    crit(28, 'B/C', 'FTP перепроверять раз в 6–8 недель тем же тестом.', 'Retest FTP every 6–8 weeks with the same protocol.');
+    crit(41, 'C', 'Не накануне главной беговой тренировки.', 'Not the day before a key run.');
+    if (s.min > 75) crit(106, 'B/C', 'Дольше 75 мин — 30–60 г углеводов в час.', 'Over 75 min — 30–60 g carbs an hour.');
+  } else if (k === 'swim') {
+    g.goal = L('Техника и плавательная выносливость', 'Technique and swim endurance');
+    g.steps = [[L('Разминка', 'Warm-up'), L('200 м спокойно, разными стилями', '200 m easy, mixed strokes')], [L('Техника', 'Drills'), L('4–6×50 м упражнения: «догонялка», боком, кулаки', '4–6×50 m drills: catch-up, side kick, fists')], [L('Основное', 'Main'), s.detail || L('6–8×100 м ровно, отдых 15–20 с', '6–8×100 m steady, 15–20 s rest')], [L('Заминка', 'Cool-down'), L('100–200 м легко', '100–200 m easy')]];
+    g.targets.push(L('RPE 4–6 на основной части; все отрезки одинаковые по времени', 'RPE 4–6 on the main set; even splits'));
+    crit(15, 'B/C', 'После паузы больше 2–3 недель — сначала техника; при плохой технике 4–8 занятий с тренером или видео дают больше, чем объём.', 'After a 2–3+ week break, technique first; with poor technique 4–8 coached or filmed sessions beat volume.');
+    crit(88, 'C', 'Не после тяжёлой силовой на верх тела.', 'Not after heavy upper-body strength work.');
+  } else if (k === 'gym') {
+    g.goal = L('Сила и экономичность, меньше травм', 'Strength and economy, fewer injuries');
+    g.steps = [[L('Разминка', 'Warm-up'), L('8–10 мин: мобильность бедра и голеностопа, лёгкие подходы', '8–10 min: hip and ankle mobility, light sets')], [L('Основное', 'Main'), s.detail || L('2–4 упражнения × 2–3 подхода × 4–8 повторов: присед или выпады, тяга, подъём на носки, кор', '2–4 exercises × 2–3 sets × 4–8 reps: squat or lunges, hinge, calf raise, core')], [L('Заминка', 'Cool-down'), L('5 мин спокойно', '5 min easy')]];
+    g.targets.push(L('Вес на 4–10 повторений, останавливаться за 1–3 повтора до отказа (RIR 1–3); вверх — взрывно', 'Load for 4–10 reps, stop 1–3 reps short of failure (RIR 1–3); lift explosively'));
+    crit(79, 'A', 'Тяжело и мало: 2–4 упражнения × 2–3 подхода × 4–8 повторов, без отказа.', 'Heavy and short: 2–4 exercises × 2–3 sets × 4–8 reps, no failure.');
+    crit(81, 'A/B', 'С выносливостью — в разные дни; в один день — с разносом от 6 ч.', 'Keep it apart from endurance work: different days, or 6 h apart.');
+    crit(84, 'C', 'Не накануне длинной или старта.', 'Not the day before a long session or a race.');
+    crit(85, 'A', 'Новый блок или пауза 2–3 недели — начать с 1–2 подходов.', 'New block or a 2–3 week break — start with 1–2 sets.');
+  } else if (k === 'climb') {
+    g.goal = L('Сила хвата и верха, лёгкий день для ног', 'Grip and upper strength, an easy day for the legs');
+    g.steps = [[L('Разминка', 'Warm-up'), L('10–15 мин: плечи, пальцы, лёгкие трассы', '10–15 min: shoulders, fingers, easy routes')], [L('Основное', 'Main'), s.detail || L('Трассы по самочувствию, отдых между попытками 3+ мин', 'Routes by feel, 3+ min rest between attempts')], [L('Заминка', 'Cool-down'), L('Лёгкие трассы, растяжка предплечий', 'Easy routes, forearm stretch')]];
+    crit(53, 'B', 'Боль в пальцах, локтях или плечах — стоп; при боли в пальцах — без мелких зацепов и хангборда.', 'Pain in fingers, elbows or shoulders — stop; finger pain means no crimps or hangboard.');
+    crit(91, 'B/C', 'Тренировки на хват — не два дня подряд.', 'Grip-heavy sessions not two days in a row.');
+  } else if (k === 'hike') {
+    g.goal = L('Длинная лёгкая нагрузка', 'Long easy load');
+    g.steps = [[L('Основное', 'Main'), s.detail || L('Ровный темп, в подъёмы короче шаг', 'Steady pace, shorter steps uphill')]];
+    crit(94, 'B/C', 'Спуск больше 800–1000 м для непривычного — как тяжёлый день ног: 48 ч без беговых интервалов и длинного бега.', 'Descending over 800–1000 m, if you’re not used to it, is a hard leg day: 48 h without run intervals or a long run.');
+    crit(95, 'B', 'На больших спусках — палки.', 'Poles on big descents.');
+    if (s.min > 75) crit(106, 'B/C', 'Дольше 75 мин — 30–60 г углеводов в час и вода.', 'Over 75 min — 30–60 g carbs an hour and water.');
+  } else {
+    g.goal = L('Восстановление', 'Recovery');
+    g.steps = [[L('Основное', 'Main'), s.detail || L('Прогулка 20–40 мин и мобильность', '20–40 min walk and mobility')]];
+  }
+  if (state.health?.track && (KINDS[k].impact || KINDS[k].hard)) crit(48, 'B/C', `Боль в месте травмы ≥2/10 во время тренировки — стоп${KINDS[k].sport === 'run' ? ' и пешком' : ''}${state.health.rule ? '. Твоё правило: ' + state.health.rule : ''}.`, `Pain at the injury site ≥2/10 during the session — stop${KINDS[k].sport === 'run' ? ' and walk' : ''}${state.health.rule ? '. Your rule: ' + state.health.rule : ''}.`);
+  return g;
+}
+function guideHTML(s) {
+  const g = sessionGuide(s);
+  const noZones = !state.zones?.ftp && !state.zones?.thr && (KINDS[s.kind].sport === 'run' || KINDS[s.kind].sport === 'bike');
+  return `<div class="guide"><p class="guide-goal">${esc(g.goal)}</p>
+    <div class="section-title">${L('Как делать', 'How to do it')}</div><div class="guide-steps">${g.steps.map(([a, b]) => `<div><b>${esc(a)}</b><span>${esc(b)}</span></div>`).join('')}</div>
+    ${g.targets.length ? `<div class="section-title">${L('Твои цифры', 'Your numbers')}</div><ul class="plan-why">${g.targets.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+    ${noZones ? `<p class="hint" style="padding-top:6px"><button class="btn link" style="min-height:0;padding:0;display:inline;width:auto" data-a="zones-open">${L('Укажи FTP и пороговый темп', 'Add your FTP and threshold pace')}</button> ${L('— и здесь будут ватты и темп по зонам.', '— and this shows watts and pace by zone.')}</p>` : ''}
+    ${g.critical.length ? `<div class="section-title">${L('Что критично', 'What matters most')}</div><ul class="guide-crit">${g.critical.map(c => `<li><span class="grade g${gradeKey(c.grade)}">${esc(gradeShort(c.grade))}</span><span>${esc(c.text)} <em class="muted">${L('правило', 'rule')} ${c.no}</em></span></li>`).join('')}</ul>` : ''}</div>`;
+}
+function zonesHTML() {
+  const z = state.zones || {}, ep = easyPace();
+  return `<div class="section-title" id="zones">${L('Пороги и зоны', 'Thresholds and zones')}</div>
+    <p class="hint" style="padding-bottom:10px">${L('Из них считаются ватты, темп и пульс в описании тренировок. Не знаешь — оставь пустым: будут ориентиры по ощущениям.', 'Watts, pace and HR in session guides come from these. Not sure — leave blank and you get effort-based targets.')}${ep ? ' ' + L(`Твой обычный темп бега по Garmin — ${paceFmt(ep)}/км.`, `Your usual run pace from Garmin is ${paceFmt(ep)}/km.`) : ''}</p>
+    <div class="wiz-row three"><label class="field">FTP, ${L('Вт', 'W')}<input data-zone="ftp" type="number" inputmode="numeric" min="80" max="500" value="${esc(z.ftp || '')}" placeholder="230"></label>
+    <label class="field">${L('Порог бега, мин/км', 'Run threshold, min/km')}<input data-zone="thr" inputmode="numeric" value="${esc(z.thr || '')}" placeholder="4:30"></label>
+    <label class="field">${L('Пульс на пороге', 'Threshold HR')}<input data-zone="lthr" type="number" inputmode="numeric" min="100" max="210" value="${esc(z.lthr || '')}" placeholder="168"></label></div>
+    <p class="hint" style="padding:6px 0 24px">${L('FTP — из теста 20 мин × 0,95 или ramp-теста; порог бега — темп, который держишь ~час (≈ темп 10 км у любителя). Перепроверять раз в 6–8 недель (правило 28).', 'FTP — from a 20-min test × 0.95 or a ramp test; run threshold — the pace you can hold ~an hour (≈ 10 km race pace for amateurs). Retest every 6–8 weeks (rule 28).')}</p>`;
+}
+
+/* ---------- week review ---------- */
+// What happened in a week, without blame (rules 97–99): sessions against plan, time against the outlook,
+// key sessions, sports, the longest effort, hard share, pain — and what follows for the next week.
+function weekReview(wk) {
+  const cur = ymd(mondayOf(new Date())), partial = wk === cur, t = weekTally(wk, partial), week = state.weeks[wk];
+  const ti = partial ? todayIdx(wk) : 7;
+  const effs = week ? week.sessions.map(s => effective(wk, s)).filter(s => s.day != null && s.status !== 'dropped') : [];
+  const missed = effs.filter(s => s.status === 'skipped' || (s.status === 'planned' && s.day < ti));
+  const acts = weekActs(wk).filter(a => trainingSport(a.sport));
+  const longest = acts.reduce((b, a) => !b || a.min > b.min ? a : b, null);
+  const days = [0, 1, 2, 3, 4, 5, 6].map(i => ymd(addDays(parseYmd(wk), i)));
+  const pain = days.map(d => state.checks[d]).filter(Boolean), painMax = Math.max(0, ...pain.map(c => Math.max(c.sit || 0, c.walk || 0)));
+  const target = outlookWeek(wk), next = outlookWeek(ymd(addDays(parseYmd(wk), 7)));
+  const ratio = t.planned ? t.done / t.planned : null, hard = t.doneMin ? Math.round(t.hardMin / t.doneMin * 100) : 0;
+  return {wk, partial, t, missed, keyMissed: missed.filter(isKey), longest, painMax, painDays: pain.length, target, next, ratio, hard, review: state.proposals[ymd(addDays(parseYmd(wk), 7))]?.review || ''};
+}
+function reviewVerdict(r) {
+  const n = `${r.t.done} ${L('из', 'of')} ${r.t.planned}`;
+  if (r.ratio == null) return r.t.doneMin ? L(`Плана на эту неделю не было; по Garmin — ${fH(r.t.doneMin / 60)}.`, `No plan this week; Garmin shows ${fH(r.t.doneMin / 60)}.`) : L('Плана и тренировок на этой неделе не было.', 'No plan and no sessions this week.');
+  if (r.partial) return L(`Пока сделано ${n} тренировок из тех, что уже прошли${r.target ? `, ${fH(r.t.doneMin / 60)} из ориентира ${fH(r.target.hours)}` : ''}.`, `So far ${n} of the sessions due are done${r.target ? `, ${fH(r.t.doneMin / 60)} of the ${fH(r.target.hours)} target` : ''}.`);
+  if (r.ratio >= 0.8) return L(`Неделя состоялась: ${n} тренировок.`, `The week happened: ${n} sessions.`);
+  if (r.ratio >= 0.5) return L(`Неделя получилась частично: ${n}. ${r.keyMissed.length ? 'Из главных не случилось: ' + r.keyMissed.map(s => kName(s.kind).toLowerCase()).join(', ') + '.' : 'Главное сделано — это важнее объёма.'}`, `A partial week: ${n}. ${r.keyMissed.length ? 'Key sessions that didn’t happen: ' + r.keyMissed.map(s => kName(s.kind).toLowerCase()).join(', ') + '.' : 'The key work got done — that matters more than volume.'}`);
+  return L(`Неделя не сложилась: ${n}. Одна такая неделя — не потеря формы: за 1–2 недели уходит в основном объём крови, а не выносливость.`, `The week didn’t come together: ${n}. One week like this isn’t lost fitness: 1–2 weeks off mostly costs blood volume, not endurance.`);
+}
+function reviewNext(r) {
+  const out = [];
+  if (r.painMax >= 2) out.push(L(`Была боль до ${r.painMax}/10 — на следующей неделе бег и тяжёлое только после дней на 0/10; если болит в покое или ночью — к врачу (правила 48–49).`, `Pain up to ${r.painMax}/10 — next week, running and hard work only after 0/10 days; pain at rest or at night means a doctor (rules 48–49).`));
+  if (r.ratio != null && r.ratio < 0.5) out.push(L('Не догонять: пропущенное не отрабатывать, начать с объёма последней полной недели (правила 30, 70).', 'Don’t chase it: skip the make-up sessions and restart from your last full week’s volume (rules 30, 70).'));
+  else if (r.next) out.push(L(`Дальше по плану: ${PHASE[r.next.phase][0].toLowerCase()}, ориентир ${fH(r.next.hours)}.`, `Next, as planned: ${PHASE[r.next.phase][1].toLowerCase()}, target ${fH(r.next.hours)}.`));
+  if (r.hard > 25) out.push(L(`Тяжёлого было ${r.hard}% времени — на следующей неделе держи лёгкие дни лёгкими (ориентир 15–20%, правило 3).`, `${r.hard}% of the time was hard — keep next week’s easy days easy (guide 15–20%, rule 3).`));
+  return out;
+}
+function reviewSheet(wk) {
+  const r = weekReview(wk), t = r.t, D = DAYS();
+  const sports = Object.entries(t.bySport).filter(([sp]) => SPORTS[sp]).sort((a, b) => b[1] - a[1]);
+  const next = reviewNext(r);
+  openSheet(`<div class="sheet-head"><span class="wiz-title">${r.partial ? L('Неделя пока', 'The week so far') : L('Итоги недели', 'Week review')}</span><button class="nav-btn strong" data-a="close-sheet">${L('Готово', 'Done')}</button></div><div class="sheet-scroll wiz">
+    <p class="hint num">${esc(weekTitle(wk))}${r.target ? ' · ' + esc(L(PHASE[r.target.phase][0], PHASE[r.target.phase][1])) + ' · ' + L(`неделя ${r.target.week} из ${r.target.of}`, `week ${r.target.week} of ${r.target.of}`) : ''}</p>
+    <h2 class="wiz-h">${esc(reviewVerdict(r))}</h2>
+    <div class="pg-tiles"><div><b class="num">${t.planned ? `${t.done}/${t.planned}` : '—'}</b><span>${L('тренировок', 'sessions')}</span></div>
+      <div><b class="num">${fH(t.doneMin / 60).replace(/ ?[чh]$/, '')}<span class="pg-of">${r.target ? '/' + fH(r.target.hours) : L(' ч', ' h')}</span></b><span>${r.target ? L('часов из ориентира', 'hours of target') : L('часов', 'hours')}</span></div>
+      <div><b class="num">${t.keyPlanned ? `${t.keyDone}/${t.keyPlanned}` : '—'}</b><span>${L('главных', 'key sessions')}</span></div></div>
+    ${sports.length ? `<div class="section-title">${L('По видам спорта', 'By sport')}</div><div class="list pg-sports">${sports.map(([sp, m]) => `<div class="row"><span class="t"><b><span class="dot pg-dot ${sp}"></span>${esc(L(SPORTS[sp][0], SPORTS[sp][1]))}</b></span><span class="num pg-val">${fH(m / 60)}</span></div>`).join('')}</div>` : ''}
+    <ul class="plan-why" style="padding-top:10px">
+      ${r.longest ? `<li>${L(`Самая длинная — ${esc(r.longest.name || SPORTS[r.longest.sport]?.[0] || '')}, ${fDur(r.longest.min)}${r.longest.km ? `, ${String(r.longest.km).replace('.', ',')} км` : ''}`, `Longest — ${esc(r.longest.name || SPORTS[r.longest.sport]?.[1] || '')}, ${fDur(r.longest.min)}${r.longest.km ? `, ${r.longest.km} km` : ''}`)}</li>` : ''}
+      ${t.doneMin && !r.partial ? `<li>${L(`Тяжёлого — ${r.hard}% времени (ориентир 15–20%)`, `Hard work — ${r.hard}% of the time (guide 15–20%)`)}</li>` : ''}
+      ${r.missed.length ? `<li>${L('Не случилось: ', 'Didn’t happen: ')}${esc(r.missed.map(s => `${kName(s.kind).toLowerCase()} (${D[s.day]})`).join(', '))}</li>` : ''}
+      ${state.health?.track ? `<li>${r.painDays ? L(`Боль: отметок ${r.painDays}, максимум ${r.painMax}/10`, `Pain: ${r.painDays} check-ins, max ${r.painMax}/10`) : L('Боль не отмечалась', 'No pain check-ins')}</li>` : ''}
+    </ul>
+    ${r.review ? `<div class="section-title">${L('Ассистент', 'Assistant')}</div><p class="plan-review">${esc(r.review)}</p>` : ''}
+    ${next.length && !r.partial ? `<div class="section-title">${L('Что из этого следует', 'What follows')}</div><ul class="plan-why">${next.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+    <p class="hint" style="padding-top:12px">${L('Неделя на 80% — уже хорошая неделя. Главное — чтобы недели продолжали случаться.', 'An 80% week is a good week. What matters is that weeks keep happening.')}</p></div>`, {review: wk});
+}
+// On the week screen: a finished week opens with its review; Sat–Sun of the current one, a nudge to look.
+function reviewCardHTML(wk, ti) {
+  if (!state.weeks[wk]) return '';
+  if (ti > 6) { const r = weekReview(wk); return `<button class="card review-card" data-a="review" data-wk="${wk}"><span class="plan-prop-eyebrow">${L('Итоги недели', 'Week review')}</span><b>${esc(reviewVerdict(r))}</b><span class="nudge-go">${L('Подробнее', 'Details')} ›</span></button>`; }
+  if (ti >= 5) return `<button class="nudge" data-a="review" data-wk="${wk}"><span>${L('Итоги недели — как она прошла', 'Week review — how it went')}</span><span class="nudge-go">${L('Посмотреть', 'View')} ›</span></button>`;
+  return '';
 }
 
 /* ---------- invites (admins) ---------- */
@@ -1811,6 +1987,7 @@ function weekHTML() {
   const planMin = counted.reduce((a, s) => a + s.min, 0);
   const doneS = effs.filter(s => s.status === 'done'), ex = extras(wk, week).filter(a => trainingSport(a.sport));
   const doneMin = doneS.reduce((a, s) => a + (s.act?.min ?? s.min), 0) + ex.reduce((a, x) => a + x.min, 0);
+  h += reviewCardHTML(wk, ti);
   h += alertsHTML(wk);
   h += planCardsHTML(wk);
   h += heroHTML(wk, week, effs, ti);
@@ -2268,7 +2445,7 @@ function sessionSheet(id) {
   if (raw.status === 'done' && raw.act?.id) return openActivity(raw.act.id, L(`По плану: ${kName(raw.kind)} · ${fDur(raw.short || raw.min)}`, `Planned: ${kName(raw.kind)} · ${fDur(raw.short || raw.min)}`), id);
   const when = s.day != null ? `${D[s.day]}${s.start != null ? ' · ' + hm(s.start) : ''} · ${fDur(s.min)}` : fDur(s.min);
   let h = `<div class="sheet-head"><h2>${esc(kName(s.kind))}</h2><button class="nav-btn" data-a="close-sheet">${L('Готово', 'Done')}</button></div><div class="sheet-scroll">
-    <p class="num" style="font-size:15px">${esc(when)}</p><p class="hint" style="margin:6px 0 4px">${esc(sDetail(s))}</p>${s.why ? `<p class="hint">${esc(whyText(s.why))}</p>` : ''}`;
+    <p class="num" style="font-size:15px">${esc(when)}</p><p class="hint" style="margin:6px 0 4px">${esc(sDetail(s))}</p>${s.why ? `<p class="hint">${esc(whyText(s.why))}</p>` : ''}${guideHTML(s)}`;
   if (s.status === 'planned' || s.status === 'skipped' || s.status === 'done') {
     h += `<div class="section-title">${L('Перенести на', 'Move to')}</div><div class="chips-row" style="flex-wrap:wrap">${D.map((d, i) => `<button class="chip" data-a="sheet-move" data-id="${id}" data-d="${i}" ${i < ti ? 'disabled style="opacity:.35"' : ''} aria-pressed="${s.day === i}">${d}</button>`).join('')}</div>
       <div class="section-title">${L('Есть только', 'Only have')}</div><div class="chips-row">${[30, 45, 60, 90].map(m => `<button class="chip" data-a="sheet-min" data-id="${id}" data-m="${m}">${fDur(m)}</button>`).join('')}</div>
@@ -2296,6 +2473,7 @@ function settingsHTML() {
   h += acctHTML();
   h += planSettingsHTML();
   h += healthHTML();
+  h += zonesHTML();
   if (cloud.me?.ai) { const u = cloud.me.ai; h += `<p class="hint" style="padding:0 0 24px">${u.unlimited ? L('Ассистент: без ограничений.', 'Assistant: no limits.') : L(`Ассистент сегодня: ${u.chat.used} из ${u.chat.limit} сообщений, ${u.plan.used} из ${u.plan.limit} сборок плана. Обновляется в полночь UTC.`, `Assistant today: ${u.chat.used} of ${u.chat.limit} messages, ${u.plan.used} of ${u.plan.limit} plan builds. Resets at midnight UTC.`)}</p>`; }
   h += invitesHTML();
   if (cloud.user) {
@@ -2422,6 +2600,8 @@ document.addEventListener('click', ev => {
   if (a === 'wk-today') { view.wk = ymd(mondayOf(new Date())); render(); return; }
   if (a === 'settings') { view.v = 'settings'; render(); scrollTo(0, 0); if (cloud.user) fn('me').then(d => { if (!d.error) { cloud.me = d; if (view.v === 'settings') render(); } }); if (cloud.user) fn('cal-status').then(d => { if (!d.error) { cloud.cals = d.calendars; cloud.google = d.google; if (view.v === 'settings') render(); } }); return; }
   if (a === 'back') { view.v = 'week'; render(); return; }
+  if (a === 'review') return reviewSheet(el.dataset.wk);
+  if (a === 'zones-open') { closeSheet(); view.v = 'settings'; render(); setTimeout(() => document.getElementById('zones')?.scrollIntoView({block: 'start'}), 50); return; }
   if (a === 'program') { view.v = 'program'; render(); scrollTo(0, 0); if (cloud.user && state.local.acts?.linked) ensureHist12().then(() => { if (view.v === 'program') render(); }); return; }
   if (a === 'undo') return undo(wk);
   if (a === 'dismiss') { lastChange = null; render(); return; }
@@ -2546,6 +2726,14 @@ document.addEventListener('change', ev => {
     const tpl = state.template[+el.dataset.tpl], f = el.dataset.f;
     if (f === 'day') tpl.day = +el.value; else if (f === 'min') tpl.min = Math.max(15, Math.min(480, +el.value || 45));
     else if (f === 'anchor') tpl.anchor = el.checked; else if (f === 'kind') { tpl.kind = el.value; tpl.min = KINDS[el.value].min; delete tpl.detail; delete tpl.key; render(); } else tpl[f] = el.value;
+    persist(); return;
+  }
+  if (el.dataset.zone != null) {
+    const f = el.dataset.zone, v = el.value.trim();
+    state.zones = {...(state.zones || {})};
+    if (!v) delete state.zones[f];
+    else if (f === 'thr') { if (parsePace(v)) state.zones.thr = v.replace('.', ':'); else return toast(L('Темп — в формате 4:30', 'Pace as 4:30')); }
+    else state.zones[f] = Math.round(+v) || undefined;
     persist(); return;
   }
   if (el.dataset.health != null) {
