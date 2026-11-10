@@ -33,6 +33,8 @@ hr{border:0;border-top:1px solid var(--line);margin:40px 0}
   <li><b>Аккаунт:</b> почта для входа. Нужна только для того, чтобы твой план был виден тебе на разных устройствах.</li>
   <li><b>Календарь (Google Календарь или ссылка iCal):</b> время и названия событий на неделю, которую ты смотришь. Только чтение. Используются, чтобы найти свободные окна и объяснить, почему тренировка переехала. Приложение ничего не создаёт, не меняет и не удаляет в календаре.</li>
   <li><b>Тренировки из Garmin</b> (если ты подключил ключ Garmin): тип, дата, длительность и дистанция. Нужны, чтобы отмечать сделанное.</li>
+  <li><b>Тренировки из Apple Health</b> (в приложении для iPhone, если ты дал доступ): тип, дата, длительность, дистанция, средний пульс и набор высоты. Только чтение: приложение ничего не пишет в Здоровье. Эти данные хранятся только на телефоне и на сервер не отправляются; исключение — ассистент (см. ниже).</li>
+  <li><b>Ассистент:</b> когда ты пишешь ассистенту или собираешь план с ним, сводка твоей недели (план, тренировки за последние недели, отметки боли, занятость календаря без названий событий) отправляется модели Claude компании Anthropic, чтобы получить ответ. Anthropic не использует эти данные для обучения моделей. Без ассистента ничего не отправляется.</li>
   <li><b>То, что ты вводишь сам:</b> шаблон недели, изменения плана, отметки самочувствия и боли.</li>
 </ul>
 
@@ -48,6 +50,7 @@ hr{border:0;border-top:1px solid var(--line);margin:40px 0}
   <li>Не продаёт и не передаёт данные третьим лицам.</li>
   <li>Не показывает рекламу и не использует данные для рекламы.</li>
   <li>Не использует данные календаря для обучения моделей ИИ.</li>
+  <li>Не использует данные Apple Health для рекламы и не передаёт их брокерам данных.</li>
 </ul>
 
 <h2>Данные Google</h2>
@@ -65,7 +68,8 @@ hr{border:0;border-top:1px solid var(--line);margin:40px 0}
 <div lang="en">
 <p>«Неделя» (Week) plans your training week around your calendar.</p>
 <ul>
-  <li><b>What it reads:</b> your sign-in email; event times and titles from Google Calendar or an iCal link (read-only, never modified); Garmin activities if you link them; the plan, notes and pain checks you enter.</li>
+  <li><b>What it reads:</b> your sign-in email; event times and titles from Google Calendar or an iCal link (read-only, never modified); Garmin activities if you link them; in the iPhone app, workouts from Apple Health if you allow it (type, date, duration, distance, average heart rate, elevation gain — read-only, kept on the phone); the plan, notes and pain checks you enter.</li>
+  <li><b>The assistant:</b> when you message the assistant or build a plan with it, a summary of your week (plan, recent workouts, pain checks, calendar busy times without event titles) is sent to Anthropic’s Claude model to get an answer. Anthropic does not train models on this data. Nothing is sent if you don’t use the assistant.</li>
   <li><b>Where it lives:</b> your plan is stored in Supabase (EU, Frankfurt), readable only by your account. Calendar events are not stored on the server: they are fetched on request and passed to the app; a copy of the week stays in your browser. Google refresh tokens and iCal links are kept server-side and never exposed to the app.</li>
   <li><b>What it never does:</b> sell or share data, show ads, or use calendar data to train AI models.</li>
   <li><b>Google user data:</b> use and transfer of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy" rel="noopener">Google API Services User Data Policy</a>, including the Limited Use requirements.</li>

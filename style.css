@@ -520,3 +520,22 @@ button.pg-week{width:100%;text-align:left;background:none;padding:2px 0;cursor:p
 .block-top{display:flex;align-items:center;gap:10px}
 .block-top input{flex:1;border:0;background:var(--fill);border-radius:10px;padding:10px;font-size:15px;min-height:42px}
 .blocks .btn.link{text-align:left;padding-left:0}
+
+/* heart-rate zones in settings: the watch's zones, plan targets and real runs on one axis */
+.wiz-row.four{grid-template-columns:repeat(4,minmax(0,1fr))}
+.hrz{margin:16px 0 4px}
+.hrz-bar{display:flex;height:28px;border-radius:6px;overflow:hidden;gap:2px}
+.hrz-bar i{display:flex;align-items:center;justify-content:center;min-width:0}
+.hrz-bar i span{font-size:11px;font-weight:600;color:var(--ink);font-style:normal}
+.hrz-ticks{position:relative;height:18px;font-size:12px;color:var(--muted)}
+.hrz-ticks span{position:absolute;transform:translateX(-50%);top:2px}
+.hrz-bands{display:flex;flex-direction:column;gap:8px;margin:8px 0}
+.hrz-band{display:grid;grid-template-columns:104px 1fr 64px;gap:8px;align-items:center;font-size:13px}
+.hrz-name{color:var(--ink-2)}
+.hrz-track{position:relative;height:10px;background:var(--fill);border-radius:5px}
+.hrz-track i{position:absolute;top:0;bottom:0;border-radius:5px}
+.hrz-track i.easy{background:var(--accent);opacity:.55}
+.hrz-track i.tempo{background:var(--accent);opacity:.8}
+.hrz-track i.int{background:var(--accent)}
+.hrz-dot{position:absolute;top:50%;width:12px;height:12px;margin:-6px 0 0 -6px;border-radius:50%;background:var(--ink);box-shadow:0 0 0 2px var(--bg)}
+.hrz-val{text-align:right;color:var(--ink);font-weight:600;font-size:13px}

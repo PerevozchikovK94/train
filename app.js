@@ -36,7 +36,7 @@ const KINDS = {
 const kName = k => L(KINDS[k].ru, KINDS[k].en);
 const kDetail = k => L(KINDS[k].dRu, KINDS[k].dEn);
 // What to do in a session: the plan's own words when it has them, unless the gate swapped the session for another.
-const sDetail = s => (!s.was && s.detail) || kDetail(s.kind);
+const sDetail = s => typeof hrText === 'function' ? hrText((!s.was && s.detail) || kDetail(s.kind)) : (!s.was && s.detail) || kDetail(s.kind);
 // A why that only says "it's where you wanted it" is kept for the sheet, not shown in the list.
 const QUIET = '\u2063';
 const whyText = w => String(w || '').replace(QUIET, '');
@@ -299,8 +299,10 @@ function guard(wk, week) {
   // Rule 71 (and the ramp): the week's time against the 4 finished weeks before it.
   const cur = ymd(mondayOf(new Date())), ref = wk < cur ? wk : cur, from = state.local.acts?.from;
   if (from && from <= ymd(addDays(parseYmd(ref), -28))) {
-    const avg = [1, 2, 3, 4].reduce((t, k) => t + actualHours(ymd(addDays(parseYmd(ref), -7 * k))), 0) / 4;
-    if (avg >= 0.5) {
+    const hrs = [1, 2, 3, 4].map(k => actualHours(ymd(addDays(parseYmd(ref), -7 * k)))), avg = hrs.reduce((t, x) => t + x, 0) / 4;
+    // Only a real base counts: every one of the 4 weeks has training in it. Sparse history usually means the watch
+    // wasn't recording yet, not that the person doesn't train — then rule 71 stays out of it (rule 69 still applies).
+    if (avg >= 0.5 && hrs.every(x => x > 0)) {
       const capMin = Math.round(avg * 60 * (ramp ? ramp.factor : 1.2));
       const fixedMin = week.sessions.filter(s => s.status === 'done' || (s.status === 'planned' && s.locked) || (s.status === 'planned' && s.day != null && s.day < ti)).reduce((t, s) => t + (s.act?.min ?? s.min), 0);
       let over = fixedMin + ahead.reduce((t, s) => t + s.min, 0) - capMin;
@@ -850,11 +852,35 @@ function mergeActs(list, from, d) {
     from: a.from && a.from < from ? a.from : from};
   saveLocal();
 }
+/* ---------- Apple Health (iPhone app only) ---------- */
+// In the native shell a small HealthKit plugin reads workouts that Garmin Connect, Apple Watch, COROS and others
+// write to Apple Health. It stays on the device: the source switch lives in state.local, not in the synced state.
+const NATIVE = !!window.Capacitor?.isNativePlatform?.();
+const HK = NATIVE && window.Capacitor.registerPlugin ? window.Capacitor.registerPlugin('WeekHealth') : null;
+const hkOn = () => !!(HK && state.local.health?.on);
+async function hkActivities(from, to) {
+  try { const d = await HK.workouts({from, to}); return {linked: true, source: 'apple', activities: d.workouts || []}; }
+  catch (e) { return {linked: true, source: 'apple', error: 'health_unavailable', activities: []}; }
+}
+async function connectHealth() {
+  if (!HK) return 'unavailable';
+  const av = await HK.isAvailable().catch(() => ({available: false}));
+  if (!av.available) return 'unavailable';
+  const r = await HK.requestAuthorization().catch(() => ({ok: false}));
+  if (!r.ok) return 'denied';
+  state.local.health = {on: true, at: Date.now()}; state.local.acts = null; saveLocal();
+  await loadActs(true);
+  await ensureHist12();
+  return null;
+}
+const actsFrom = (from, to) => hkOn() ? hkActivities(from, to) : fn('activities', {from, to});
+
 async function loadActs(force) {
+  if (!cloud.user && !hkOn()) return;
   const a = state.local.acts;
   if (!force && a && Date.now() - a.at < 15 * 60e3) return;
   const to = new Date(), from = ymd(addDays(mondayOf(to), -28));
-  const d = await fn('activities', {from, to: ymd(to)});
+  const d = await actsFrom(from, ymd(to));
   if (d.error) return;
   cloud.gLinked = d.linked;
   mergeActs(d.activities || [], from, d);
@@ -870,10 +896,10 @@ async function loadActs(force) {
 // Older history: a range [from, to) that the cache doesn't reach yet. Returns how many activities came in.
 const histBusy = {on: false};
 async function loadHistory(from, to) {
-  if (histBusy.on || !cloud.user) return null;
+  if (histBusy.on || (!cloud.user && !hkOn())) return null;
   histBusy.on = true;
   try {
-    const d = await fn('activities', {from, to});
+    const d = await actsFrom(from, to);
     if (d.error) return null;
     const before = state.local.acts?.list?.length || 0;
     mergeActs(d.activities || [], from, d);
@@ -970,7 +996,7 @@ function garminCtx() {
   }
   return {linked: !!state.local.acts?.linked, recent_21d: recent, hours_by_week: weeks};
 }
-const zonesCtx = () => { const z = state.zones || {}, ep = typeof easyPace === 'function' ? easyPace() : null; return {ftp_w: z.ftp || null, run_threshold_pace: z.thr || null, threshold_hr: z.lthr || null, usual_run_pace_garmin: ep ? paceFmt(ep) : null, note: 'если есть — ставь в detail ватты/темп/пульс'}; };
+const zonesCtx = () => { const z = state.zones || {}, ep = typeof easyPace === 'function' ? easyPace() : null; return {ftp_w: z.ftp || null, run_threshold_pace: z.thr || null, heart_rate: typeof hrTargets === 'function' && hrTargets() ? (t => ({watch_zones_top: {Z1: t.b[0], Z2: t.b[1], Z3: t.b[2], Z4: t.b[3]}, easy_max: t.easyMax, tempo: t.tempo, threshold: t.hard, intervals_from: t.intervals, usual_easy_run_hr: t.usual}))(hrTargets()) : null, usual_run_pace_garmin: ep ? paceFmt(ep) : null, note: 'в detail пиши пульс в ударах из heart_rate (например «пульс до 153»), а не названия зон Z1–Z5: зоны на часах у человека свои; если heart_rate нет — RPE и разговорный тест'}; };
 const templateCtx = () => state.template.map(t => ({day: DAYS_RU[t.day], kind: KINDS[t.kind].ru, min: t.min, tod: t.tod, anchor: t.anchor, ...(t.detail ? {detail: t.detail} : {})}));
 function chatContext(focus) {
   const wk = view.wk, week = state.weeks[wk], ti = todayIdx(wk), now = new Date(), cur = ymd(mondayOf(now)), nwk = ymd(addDays(mondayOf(now), 7));
@@ -1231,6 +1257,7 @@ function histCtx() {
 async function ensureHist12() {
   const a = state.local.acts, from = ymd(addDays(mondayOf(new Date()), -84));
   if (a?.linked && a.from && a.from > from) await loadHistory(from, a.from);
+  else if (hkOn() && !a?.from) await loadHistory(from, ymd(new Date()));
 }
 function planContext(mode, t) {
   const p = state.prefs, cur = ymd(mondayOf(new Date()));
@@ -1487,7 +1514,7 @@ function wizRender() { if (sheetCtx?.wiz) { const sc = $('#sheetPanel .sheet-scr
 const planTotal = list => list.reduce((t, x) => t + x.min, 0);
 function planRowsHTML(list) {
   const D = DAYS();
-  return `<div class="plan-list">${list.slice().sort((x, y) => x.day - y.day).map(x => `<div class="plan-row"><span class="plan-day">${D[x.day]}</span><div class="plan-what"><span class="plan-name"><span class="dot ${KINDS[x.kind].sport}"></span>${esc(kName(x.kind))}${x.key ? `<span class="plan-key">${L('главная', 'key')}</span>` : ''}<span class="plan-min num">${fDur(x.min)}</span></span>${x.detail ? `<span class="plan-detail">${esc(x.detail)}</span>` : ''}</div></div>`).join('')}</div>`;
+  return `<div class="plan-list">${list.slice().sort((x, y) => x.day - y.day).map(x => `<div class="plan-row"><span class="plan-day">${D[x.day]}</span><div class="plan-what"><span class="plan-name"><span class="dot ${KINDS[x.kind].sport}"></span>${esc(kName(x.kind))}${x.key ? `<span class="plan-key">${L('главная', 'key')}</span>` : ''}<span class="plan-min num">${fDur(x.min)}</span></span>${x.detail ? `<span class="plan-detail">${esc(hrText(x.detail))}</span>` : ''}</div></div>`).join('')}</div>`;
 }
 function wizHTML() {
   const a = wiz.a, st = wiz.step, steps = 3;
@@ -1678,6 +1705,8 @@ const onbErr = e => ({
   wrong: L('Неверная почта или пароль', 'Wrong email or password'), bad_key: L('Это не похоже на ключ — скопируй его целиком', 'That doesn’t look like a key — copy all of it'),
   key_rejected: L('Garmin не принял ключ: проверь, что он скопирован целиком и не истёк', 'Garmin rejected the key: check it’s complete and not expired'),
   garmin_unavailable: L('Garmin сейчас не отвечает — попробуй позже', 'Garmin isn’t answering — try later'),
+  health_denied: L('Доступ к Здоровью не выдан. Включи: Настройки iPhone → Здоровье → Доступ к данным → Неделя', 'No access to Health. Turn it on: iPhone Settings → Health → Data Access → Week'),
+  health_unavailable: L('Apple Health недоступно на этом устройстве', 'Apple Health isn’t available on this device'),
 }[e] || L('Не получилось — проверь сеть и попробуй ещё раз', 'Didn’t work — check the connection and try again'));
 
 function onbHTML() {
@@ -1717,13 +1746,25 @@ function onbHTML() {
     b = `<h2 class="wiz-h">${L('Подключи календарь', 'Connect your calendar')}</h2>
       <p class="hint">${L('Приложение смотрит только, когда ты занят, и ставит тренировки в окна между встречами. Календарь оно не меняет.', 'The app only looks at when you’re busy and fits sessions between events. It never changes your calendar.')}</p>
       ${cals.length ? `<div class="list" style="margin:12px 0">${cals.map(c => `<div class="row"><span class="t"><b>${esc(c.label)}</b><span>${L('Подключён', 'Connected')}</span></span></div>`).join('')}</div>` : ''}
-      <div class="stack" style="padding-top:8px">${cloud.google ? `<button class="btn ${cals.length ? 'quiet' : 'primary'}" data-a="google" ${cloud.calBusy ? 'disabled' : ''}>${L('Подключить Google Календарь', 'Connect Google Calendar')}</button>
+      <div class="stack" style="padding-top:8px">${cloud.google && !NATIVE ? `<button class="btn ${cals.length ? 'quiet' : 'primary'}" data-a="google" ${cloud.calBusy ? 'disabled' : ''}>${L('Подключить Google Календарь', 'Connect Google Calendar')}</button>
         <p class="hint">${L('Google может показать «приложение не проверено» — оно в бете: «Дополнительно» → «Перейти».', 'Google may say the app isn’t verified — it’s in beta: Advanced → Go to app.')}</p>` : ''}</div>
-      <details class="onb-more" ${cloud.google ? '' : 'open'}><summary>${L('Apple, Outlook или рабочий — по ссылке iCal', 'Apple, Outlook or work — by iCal link')}</summary>
+      <details class="onb-more" ${cloud.google && !NATIVE ? "" : "open"}><summary>${L('Apple, Outlook или рабочий — по ссылке iCal', 'Apple, Outlook or work — by iCal link')}</summary>
         <p class="hint">${L('Apple: Календарь на Mac → правый клик по календарю → «Поделиться» → публичный, скопируй ссылку. Outlook: Настройки → Календарь → Общие календари → «Опубликовать» → ICS. Google: Настройки → календарь → «Секретный адрес в формате iCal».', 'Apple: Calendar on a Mac → right-click the calendar → Share → Public, copy the link. Outlook: Settings → Calendar → Shared calendars → Publish → ICS. Google: Settings → your calendar → Secret address in iCal format.')}</p>
         <form id="onbCal" class="stack"><label class="field">${L('Ссылка iCal (.ics)', 'iCal link (.ics)')}<input id="onbCalUrl" type="url" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://…/basic.ics" required></label>
         <button class="btn quiet" type="submit" ${cloud.calBusy ? 'disabled' : ''}>${cloud.calBusy ? L('Проверяю…', 'Checking…') : L('Подключить по ссылке', 'Connect by link')}</button></form></details>
       <div class="stack wiz-go"><button class="btn ${cals.length ? 'primary' : 'quiet'}" data-a="onb-go" data-s="garmin">${cals.length ? L('Дальше', 'Next') : L('Без календаря — дальше', 'Skip the calendar')}</button></div>`;
+  } else if (st === 'garmin' && NATIVE && !cloud.me?.garmin?.linked) {
+    const a = state.local.acts, on = hkOn();
+    b = `<h2 class="wiz-h">${L('Откуда брать тренировки', 'Where your workouts come from')}</h2>`;
+    if (on) b += `<p class="hint">${L('Apple Health подключено.', 'Apple Health is connected.')} ${a?.list ? L(`Тренировок за последние 4 недели: ${a.list.filter(x => trainingSport(x.sport)).length}.`, `Workouts in the last 4 weeks: ${a.list.filter(x => trainingSport(x.sport)).length}.`) : ''} ${a?.list?.length ? '' : L('Пусто? Включи запись в Здоровье в приложении часов: Garmin Connect → Настройки → Приложения → Apple Здоровье.', 'Empty? Turn on writing to Health in your watch app: Garmin Connect → Settings → Connected apps → Apple Health.')}</p>
+      <div class="stack wiz-go"><button class="btn primary" data-a="onb-go" data-s="time">${L('Дальше', 'Next')}</button></div>`;
+    else b += `<p class="hint">${L('Garmin, Apple Watch, COROS и Wahoo пишут тренировки в Здоровье — «Неделя» прочитает их оттуда. Только чтение, данные остаются на телефоне.', 'Garmin, Apple Watch, COROS and Wahoo write workouts to Apple Health — Week reads them from there. Read-only, the data stays on your phone.')}</p>
+      ${err}<div class="stack wiz-go"><button class="btn primary" data-a="onb-health-connect" ${dis}>${onb.busy ? L('Подключаю…', 'Connecting…') : L('Подключить Apple Health', 'Connect Apple Health')}</button></div>
+      <p class="hint" style="padding-top:8px">${L('Для Garmin: в Garmin Connect → Настройки → Приложения → Apple Здоровье включи запись тренировок.', 'For Garmin: Garmin Connect → Settings → Connected apps → Apple Health, turn on workouts.')}</p>
+      <details class="onb-more"><summary>${L('Без Apple Health — личный ключ Garmin', 'No Apple Health — a personal Garmin key')}</summary>
+        <ol class="onb-steps"><li>${L('Garmin Connect в браузере → Настройки → <b>Personal API</b> → <b>Create key</b> (действует год).', 'Garmin Connect in a browser → Settings → <b>Personal API</b> → <b>Create key</b> (lasts a year).')}</li><li>${L('Скопируй ключ целиком и вставь.', 'Copy the whole key and paste it.')}</li></ol>
+        <form id="onbGarmin" class="stack"><label class="field">${L('Ключ Personal API', 'Personal API key')}<input id="onbGarminKey" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" required></label><button class="btn quiet" type="submit" ${dis}>${L('Подключить ключ', 'Connect the key')}</button></form></details>
+      <div class="stack" style="padding-top:8px"><button class="btn link" data-a="onb-go" data-s="time">${L('Позже — дальше', 'Later — next')}</button></div>`;
   } else if (st === 'garmin') {
     const g = cloud.me?.garmin, a = state.local.acts;
     b = `<h2 class="wiz-h">${L('Подключи Garmin', 'Connect Garmin')}</h2>`;
@@ -1735,7 +1776,7 @@ function onbHTML() {
         <li>${L('Скопируй ключ целиком и вставь сюда.', 'Copy the whole key and paste it here.')}</li></ol>
       <form id="onbGarmin" class="stack"><label class="field">${L('Ключ Personal API', 'Personal API key')}<input id="onbGarminKey" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" required></label>
       ${err}<button class="btn primary" type="submit" ${dis}>${onb.busy ? L('Проверяю ключ…', 'Checking the key…') : L('Подключить', 'Connect')}</button></form>
-      <p class="hint" style="padding-top:8px">${L('Ключ хранится на сервере и в приложении больше не показывается. Он общий с «Залом».', 'The key stays on the server and is never shown again. It’s shared with the gym app.')}</p>
+      <p class="hint" style="padding-top:8px">${L('В приложении «Неделя» для iPhone это одна кнопка — через Apple Health. ', 'In the Week iPhone app this is one tap — via Apple Health. ')}${L('Ключ хранится на сервере и в приложении больше не показывается. Он общий с «Залом».', 'The key stays on the server and is never shown again. It’s shared with the gym app.')}</p>
       <div class="stack" style="padding-top:8px"><button class="btn link" data-a="onb-go" data-s="time">${L('Нет Garmin или позже — дальше', 'No Garmin, or later — skip')}</button></div>`;
   } else if (st === 'time') {
     const p = state.prefs, tin = (f, v) => `<input data-pref="${f}" type="time" value="${esc(v)}">`;
@@ -1903,6 +1944,36 @@ function programHTML() {
 }
 
 /* ---------- session guide: how to do it, in your numbers, and what the rulebook says is critical ---------- */
+/* ---------- heart rate: the watch's zones, and targets in beats per minute ---------- */
+// state.zones.hr = {b: [Z1 top, Z2 top, Z3 top, Z4 top], easy: 2|3}. The bounds are copied from the watch (Garmin's
+// Personal API doesn't expose them), so the app, the plan and the watch speak the same numbers. «Easy» is the zone
+// the person's easy runs live in: Z2 when the watch zones are threshold-based, often Z3 when they're % of max HR.
+const hrZonesOk = b => Array.isArray(b) && b.length === 4 && b.every((x, i) => x > 60 && x < 230 && (i === 0 || x > b[i - 1]));
+// The usual easy-run HR: the median average HR of runs of 20+ min in the last 8 weeks.
+function usualRunHr() {
+  const xs = runsSince(56).filter(a => a.min >= 20 && a.hr).map(a => a.hr).sort((a, b) => a - b);
+  return xs.length >= 3 ? xs[Math.floor(xs.length / 2)] : null;
+}
+function hrTargets() {
+  const h = state.zones?.hr; if (!hrZonesOk(h?.b)) return null;
+  const b = h.b, u = usualRunHr();
+  const auto = u ? Math.min(3, Math.max(2, b.findIndex(x => u <= x) + 1 || 4)) : 2;
+  const e = h.easy === 2 || h.easy === 3 ? h.easy : auto;
+  return {b, e, auto, usual: u, easyMax: b[e - 1], tempo: [b[e - 1] + 1, b[e]], hard: e === 2 ? [b[2] + 1, b[3]] : null, intervals: b[3]};
+}
+const zSpan = (t, from, to) => to === from ? `Z${from}` : `Z${from}–Z${to}`;
+// Plan text written with zone labels («Z2 ровно», «3×10 мин Z3») → the same thing in beats, from the person's zones.
+function hrText(text) {
+  const t = hrTargets(); if (!t || !text) return text;
+  return String(text).replace(/\bZ([1-5])(?:\s*[–-]\s*Z?([1-5]))?\b/g, (m, a, c) => {
+    const hi = Math.max(+a, +(c || a));
+    if (hi <= 2) return L(`пульс до ${t.easyMax}`, `HR under ${t.easyMax}`);
+    if (hi === 3) return L(`пульс ${t.tempo[0]}–${t.tempo[1]}`, `HR ${t.tempo[0]}–${t.tempo[1]}`);
+    if (hi === 4) return t.hard ? L(`пульс ${t.hard[0]}–${t.hard[1]}`, `HR ${t.hard[0]}–${t.hard[1]}`) : L(`пульс ${t.tempo[0]}–${t.tempo[1]}`, `HR ${t.tempo[0]}–${t.tempo[1]}`);
+    return L(`пульс от ${t.intervals}`, `HR ${t.intervals}+`);
+  });
+}
+
 // Thresholds the person enters (state.zones: ftp W, thr run pace s/km, lthr bpm). Without them targets fall back to
 // effort (RPE, talk test) and the usual easy pace Garmin shows. Rule numbers and grades are the rulebook's.
 const paceFmt = sec => `${Math.floor(sec / 60)}:${pad(Math.round(sec % 60))}`;
@@ -1920,13 +1991,14 @@ const longestRun30 = () => Math.max(0, ...runsSince(30).map(a => a.min));
 const W = (f, a, b) => `${Math.round(f * a / 5) * 5}–${Math.round(f * b / 5) * 5} Вт`.replace(' Вт', L(' Вт', ' W'));
 const isKey = s => s.key || KINDS[s.kind].hard || s.kind.endsWith('_long');
 function sessionGuide(s) {
-  const z = state.zones || {}, ftp = +z.ftp || null, thr = parsePace(z.thr), lthr = +z.lthr || null, ep = easyPace(), k = s.kind;
+  const z = state.zones || {}, ftp = +z.ftp || null, thr = parsePace(z.thr), ep = easyPace(), k = s.kind;
   const g = {goal: '', steps: [], targets: [], critical: []};
   const crit = (no, grade, ru, en) => g.critical.push({no, grade, text: L(ru, en)});
   const easyRun = () => {
     if (thr) g.targets.push(L(`Темп ${paceFmt(thr * 1.15)}–${paceFmt(thr * 1.3)}/км (порог ${paceFmt(thr)}/км + 15–30%)`, `Pace ${paceFmt(thr * 1.15)}–${paceFmt(thr * 1.3)}/km (threshold ${paceFmt(thr)}/km + 15–30%)`));
     else if (ep) g.targets.push(L(`Темп около ${paceFmt(ep)}/км — твой обычный по Garmin; если пульс ползёт вверх — медленнее`, `Pace around ${paceFmt(ep)}/km — your usual from Garmin; slow down if HR creeps up`));
-    if (lthr) g.targets.push(L(`Пульс до ${Math.round(lthr * 0.89)} (≈89% пульса на пороге)`, `HR under ${Math.round(lthr * 0.89)} (≈89% of threshold HR)`));
+    const ht = hrTargets();
+    if (ht) g.targets.push(L(`Пульс до ${ht.easyMax} — верх твоей лёгкой зоны (${zSpan(ht, 1, ht.e)} на часах)`, `HR under ${ht.easyMax} — the top of your easy zone (${zSpan(ht, 1, ht.e)} on the watch)`));
     g.targets.push(L('RPE 2–3 из 10: говоришь полными предложениями', 'RPE 2–3 of 10: you can talk in full sentences'));
   };
   const runCap = () => { const lr = longestRun30(); if (lr) crit(69, 'B', `Не дольше ${Math.round(lr * 1.1)} мин: самая длинная пробежка за 30 дней — ${lr} мин, +10% — предел. Пропущенное не докидывать.`, `No longer than ${Math.round(lr * 1.1)} min: your longest run in 30 days was ${lr} min; +10% is the cap. Don’t make up missed volume.`); };
@@ -1938,9 +2010,10 @@ function sessionGuide(s) {
     if (k === 'run_long') crit(7, 'C', 'Не в один день с длинным велом; если подряд — бег лёгкий.', 'Not on the same day as a long ride; back to back, keep the run easy.');
   } else if (k === 'run_q') {
     g.goal = L('Скорость на пороге и VO2max', 'Threshold speed and VO2max');
-    g.steps = [[L('Разминка', 'Warm-up'), L('15 мин лёгко + 3–4 ускорения по 20 с', '15 min easy + 3–4 × 20 s strides')], [L('Основное', 'Main'), s.detail || L('5×3 мин тяжело (RPE 8), между — 2 мин трусцой', '5×3 min hard (RPE 8), 2 min jog between')], [L('Заминка', 'Cool-down'), L('10 мин лёгко', '10 min easy')]];
+    g.steps = [[L('Разминка', 'Warm-up'), L('15 мин лёгко + 3–4 ускорения по 20 с', '15 min easy + 3–4 × 20 s strides')], [L('Основное', 'Main'), hrText(s.detail) || L('5×3 мин тяжело (RPE 8), между — 2 мин трусцой', '5×3 min hard (RPE 8), 2 min jog between')], [L('Заминка', 'Cool-down'), L('10 мин лёгко', '10 min easy')]];
     if (thr) g.targets.push(L(`Пороговые отрезки: ${paceFmt(thr - 5)}–${paceFmt(thr + 5)}/км · отрезки 3–5 мин: ${paceFmt(thr - 20)}–${paceFmt(thr - 10)}/км`, `Threshold reps: ${paceFmt(thr - 5)}–${paceFmt(thr + 5)}/km · 3–5 min reps: ${paceFmt(thr - 20)}–${paceFmt(thr - 10)}/km`));
-    if (lthr) g.targets.push(L(`Пульс к концу отрезков ${Math.round(lthr * 0.95)}–${Math.round(lthr * 1.02)}`, `HR by the end of reps ${Math.round(lthr * 0.95)}–${Math.round(lthr * 1.02)}`));
+    const qt = hrTargets();
+    if (qt) g.targets.push(L(`Пульс: темп и порог ${qt.tempo[0]}–${(qt.hard || qt.tempo)[1]} (Z${qt.e + 1}${qt.hard ? '–Z4' : ''}), короткие отрезки к концу — от ${qt.intervals} (Z5)`, `HR: tempo and threshold ${qt.tempo[0]}–${(qt.hard || qt.tempo)[1]} (Z${qt.e + 1}${qt.hard ? '–Z4' : ''}), short reps by the end — ${qt.intervals}+ (Z5)`));
     g.targets.push(L('RPE 7 на пороге, 8–9 на коротких отрезках; последний не хуже первого', 'RPE 7 at threshold, 8–9 on short reps; the last as good as the first'));
     crit(23, 'A/B', 'Полноценная VO2max-сессия — не меньше 15 мин работы в отрезках от 2 мин (5×3, 4×4).', 'A real VO2max session is at least 15 min of work in reps of 2 min or more (5×3, 4×4).');
     crit(39, 'C/B', 'Не в соседний день с другой тяжёлой; переносить только туда, где нет тяжёлого накануне и наутро.', 'Not next to another hard day; move it only where there’s nothing hard the day before or after.');
@@ -1948,7 +2021,7 @@ function sessionGuide(s) {
     runCap();
   } else if (k === 'bike_easy' || k === 'bike_long') {
     g.goal = k === 'bike_long' ? L('Выносливость и умение ехать долго', 'Endurance and riding long') : L('Лёгкий объём и восстановление', 'Easy volume and recovery');
-    g.steps = [[L('Разминка', 'Warm-up'), L('10 мин легко, каденс 90+', '10 min easy, cadence 90+')], [L('Основное', 'Main'), s.detail || L('Ровно в Z2, в подъёмы не «рвать»', 'Steady Z2, don’t surge on climbs')], [L('Заминка', 'Cool-down'), L('5–10 мин легко', '5–10 min easy')]];
+    g.steps = [[L('Разминка', 'Warm-up'), L('10 мин легко, каденс 90+', '10 min easy, cadence 90+')], [L('Основное', 'Main'), hrText(s.detail) || L('Ровно в Z2, в подъёмы не «рвать»', 'Steady Z2, don’t surge on climbs')], [L('Заминка', 'Cool-down'), L('5–10 мин легко', '5–10 min easy')]];
     if (ftp) g.targets.push(L(`Мощность ${W(ftp, 0.56, 0.75)} (56–75% FTP ${ftp} Вт)`, `Power ${W(ftp, 0.56, 0.75)} (56–75% of FTP ${ftp} W)`));
     g.targets.push(L('Каденс 85–95, RPE 2–3', 'Cadence 85–95, RPE 2–3'));
     if (s.min > 75) crit(106, 'B/C', `Питание: ${s.min >= 150 ? 'до 90 г углеводов в час (глюкоза + фруктоза), если ЖКТ привык' : '30–60 г углеводов в час'}, начать в первые 20–30 мин.`, `Fuel: ${s.min >= 150 ? 'up to 90 g carbs an hour (glucose + fructose) if your gut is trained' : '30–60 g carbs an hour'}, starting in the first 20–30 min.`);
@@ -1956,7 +2029,7 @@ function sessionGuide(s) {
     crit(26, 'B/C', 'На станке — по мощности (ERG), с вентилятором; дрейф пульса больше 5–8% при той же мощности — снизить цель.', 'Indoors ride by power (ERG) with a fan; HR drifting over 5–8% at the same power — lower the target.');
   } else if (k === 'bike_q') {
     g.goal = L('Мощность на пороге (FTP)', 'Threshold power (FTP)');
-    g.steps = [[L('Разминка', 'Warm-up'), L('15 мин с 2–3 ускорениями по 1 мин', '15 min with 2–3 × 1 min pick-ups')], [L('Основное', 'Main'), s.detail || L('3×12 мин sweet spot, между — 4 мин легко', '3×12 min sweet spot, 4 min easy between')], [L('Заминка', 'Cool-down'), L('10 мин легко', '10 min easy')]];
+    g.steps = [[L('Разминка', 'Warm-up'), L('15 мин с 2–3 ускорениями по 1 мин', '15 min with 2–3 × 1 min pick-ups')], [L('Основное', 'Main'), hrText(s.detail) || L('3×12 мин sweet spot, между — 4 мин легко', '3×12 min sweet spot, 4 min easy between')], [L('Заминка', 'Cool-down'), L('10 мин легко', '10 min easy')]];
     if (ftp) g.targets.push(L(`Sweet spot ${W(ftp, 0.88, 0.94)} · порог ${W(ftp, 0.95, 1.0)} · VO2 ${W(ftp, 1.06, 1.2)}`, `Sweet spot ${W(ftp, 0.88, 0.94)} · threshold ${W(ftp, 0.95, 1.0)} · VO2 ${W(ftp, 1.06, 1.2)}`));
     else g.targets.push(L('Без FTP: sweet spot — RPE 6–7, «тяжело, но говорить короткими фразами можно»', 'Without FTP: sweet spot is RPE 6–7, hard but short phrases are possible'));
     crit(25, 'B/C', 'Интервалы — по мощности; FTP — оценка ±5%; длинные пороговые блоки 88–95% FTP.', 'Intervals by power; FTP is an estimate ±5%; long threshold blocks at 88–95% FTP.');
@@ -1965,13 +2038,13 @@ function sessionGuide(s) {
     if (s.min > 75) crit(106, 'B/C', 'Дольше 75 мин — 30–60 г углеводов в час.', 'Over 75 min — 30–60 g carbs an hour.');
   } else if (k === 'swim') {
     g.goal = L('Техника и плавательная выносливость', 'Technique and swim endurance');
-    g.steps = [[L('Разминка', 'Warm-up'), L('200 м спокойно, разными стилями', '200 m easy, mixed strokes')], [L('Техника', 'Drills'), L('4–6×50 м упражнения: «догонялка», боком, кулаки', '4–6×50 m drills: catch-up, side kick, fists')], [L('Основное', 'Main'), s.detail || L('6–8×100 м ровно, отдых 15–20 с', '6–8×100 m steady, 15–20 s rest')], [L('Заминка', 'Cool-down'), L('100–200 м легко', '100–200 m easy')]];
+    g.steps = [[L('Разминка', 'Warm-up'), L('200 м спокойно, разными стилями', '200 m easy, mixed strokes')], [L('Техника', 'Drills'), L('4–6×50 м упражнения: «догонялка», боком, кулаки', '4–6×50 m drills: catch-up, side kick, fists')], [L('Основное', 'Main'), hrText(s.detail) || L('6–8×100 м ровно, отдых 15–20 с', '6–8×100 m steady, 15–20 s rest')], [L('Заминка', 'Cool-down'), L('100–200 м легко', '100–200 m easy')]];
     g.targets.push(L('RPE 4–6 на основной части; все отрезки одинаковые по времени', 'RPE 4–6 on the main set; even splits'));
     crit(15, 'B/C', 'После паузы больше 2–3 недель — сначала техника; при плохой технике 4–8 занятий с тренером или видео дают больше, чем объём.', 'After a 2–3+ week break, technique first; with poor technique 4–8 coached or filmed sessions beat volume.');
     crit(88, 'C', 'Не после тяжёлой силовой на верх тела.', 'Not after heavy upper-body strength work.');
   } else if (k === 'gym') {
     g.goal = L('Сила и экономичность, меньше травм', 'Strength and economy, fewer injuries');
-    g.steps = [[L('Разминка', 'Warm-up'), L('8–10 мин: мобильность бедра и голеностопа, лёгкие подходы', '8–10 min: hip and ankle mobility, light sets')], [L('Основное', 'Main'), s.detail || L('2–4 упражнения × 2–3 подхода × 4–8 повторов: присед или выпады, тяга, подъём на носки, кор', '2–4 exercises × 2–3 sets × 4–8 reps: squat or lunges, hinge, calf raise, core')], [L('Заминка', 'Cool-down'), L('5 мин спокойно', '5 min easy')]];
+    g.steps = [[L('Разминка', 'Warm-up'), L('8–10 мин: мобильность бедра и голеностопа, лёгкие подходы', '8–10 min: hip and ankle mobility, light sets')], [L('Основное', 'Main'), hrText(s.detail) || L('2–4 упражнения × 2–3 подхода × 4–8 повторов: присед или выпады, тяга, подъём на носки, кор', '2–4 exercises × 2–3 sets × 4–8 reps: squat or lunges, hinge, calf raise, core')], [L('Заминка', 'Cool-down'), L('5 мин спокойно', '5 min easy')]];
     g.targets.push(L('Вес на 4–10 повторений, останавливаться за 1–3 повтора до отказа (RIR 1–3); вверх — взрывно', 'Load for 4–10 reps, stop 1–3 reps short of failure (RIR 1–3); lift explosively'));
     crit(79, 'A', 'Тяжело и мало: 2–4 упражнения × 2–3 подхода × 4–8 повторов, без отказа.', 'Heavy and short: 2–4 exercises × 2–3 sets × 4–8 reps, no failure.');
     crit(81, 'A/B', 'С выносливостью — в разные дни; в один день — с разносом от 6 ч.', 'Keep it apart from endurance work: different days, or 6 h apart.');
@@ -1979,18 +2052,18 @@ function sessionGuide(s) {
     crit(85, 'A', 'Новый блок или пауза 2–3 недели — начать с 1–2 подходов.', 'New block or a 2–3 week break — start with 1–2 sets.');
   } else if (k === 'climb') {
     g.goal = L('Сила хвата и верха, лёгкий день для ног', 'Grip and upper strength, an easy day for the legs');
-    g.steps = [[L('Разминка', 'Warm-up'), L('10–15 мин: плечи, пальцы, лёгкие трассы', '10–15 min: shoulders, fingers, easy routes')], [L('Основное', 'Main'), s.detail || L('Трассы по самочувствию, отдых между попытками 3+ мин', 'Routes by feel, 3+ min rest between attempts')], [L('Заминка', 'Cool-down'), L('Лёгкие трассы, растяжка предплечий', 'Easy routes, forearm stretch')]];
+    g.steps = [[L('Разминка', 'Warm-up'), L('10–15 мин: плечи, пальцы, лёгкие трассы', '10–15 min: shoulders, fingers, easy routes')], [L('Основное', 'Main'), hrText(s.detail) || L('Трассы по самочувствию, отдых между попытками 3+ мин', 'Routes by feel, 3+ min rest between attempts')], [L('Заминка', 'Cool-down'), L('Лёгкие трассы, растяжка предплечий', 'Easy routes, forearm stretch')]];
     crit(53, 'B', 'Боль в пальцах, локтях или плечах — стоп; при боли в пальцах — без мелких зацепов и хангборда.', 'Pain in fingers, elbows or shoulders — stop; finger pain means no crimps or hangboard.');
     crit(91, 'B/C', 'Тренировки на хват — не два дня подряд.', 'Grip-heavy sessions not two days in a row.');
   } else if (k === 'hike') {
     g.goal = L('Длинная лёгкая нагрузка', 'Long easy load');
-    g.steps = [[L('Основное', 'Main'), s.detail || L('Ровный темп, в подъёмы короче шаг', 'Steady pace, shorter steps uphill')]];
+    g.steps = [[L('Основное', 'Main'), hrText(s.detail) || L('Ровный темп, в подъёмы короче шаг', 'Steady pace, shorter steps uphill')]];
     crit(94, 'B/C', 'Спуск больше 800–1000 м для непривычного — как тяжёлый день ног: 48 ч без беговых интервалов и длинного бега.', 'Descending over 800–1000 m, if you’re not used to it, is a hard leg day: 48 h without run intervals or a long run.');
     crit(95, 'B', 'На больших спусках — палки.', 'Poles on big descents.');
     if (s.min > 75) crit(106, 'B/C', 'Дольше 75 мин — 30–60 г углеводов в час и вода.', 'Over 75 min — 30–60 g carbs an hour and water.');
   } else {
     g.goal = L('Восстановление', 'Recovery');
-    g.steps = [[L('Основное', 'Main'), s.detail || L('Прогулка 20–40 мин и мобильность', '20–40 min walk and mobility')]];
+    g.steps = [[L('Основное', 'Main'), hrText(s.detail) || L('Прогулка 20–40 мин и мобильность', '20–40 min walk and mobility')]];
   }
   if (state.health?.track && (KINDS[k].impact || KINDS[k].hard)) crit(48, 'B/C', `Боль в месте травмы ≥2/10 во время тренировки — стоп${KINDS[k].sport === 'run' ? ' и пешком' : ''}${state.health.rule ? '. Твоё правило: ' + state.health.rule : ''}.`, `Pain at the injury site ≥2/10 during the session — stop${KINDS[k].sport === 'run' ? ' and walk' : ''}${state.health.rule ? '. Your rule: ' + state.health.rule : ''}.`);
   return g;
@@ -2004,14 +2077,36 @@ function guideHTML(s) {
     ${noZones ? `<p class="hint" style="padding-top:6px"><button class="btn link" style="min-height:0;padding:0;display:inline;width:auto" data-a="zones-open">${L('Укажи FTP и пороговый темп', 'Add your FTP and threshold pace')}</button> ${L('— и здесь будут ватты и темп по зонам.', '— and this shows watts and pace by zone.')}</p>` : ''}
     ${g.critical.length ? `<div class="section-title">${L('Что критично', 'What matters most')}</div><ul class="guide-crit">${g.critical.map(c => `<li><span class="grade g${gradeKey(c.grade)}">${esc(gradeShort(c.grade))}</span><span>${esc(c.text)} <em class="muted">${L('правило', 'rule')} ${c.no}</em></span></li>`).join('')}</ul>` : ''}</div>`;
 }
+function hrZonesHTML() {
+  const h = state.zones?.hr || {}, b = h.b || [], t = hrTargets();
+  let out = `<div class="section-title">${L('Пульсовые зоны', 'Heart-rate zones')}</div>
+    <p class="hint" style="padding-bottom:8px">${L('Перепиши границы из часов: Garmin Connect → Настройки → Зоны пульса. Тогда план, разбор тренировок и часы говорят одними цифрами.', 'Copy the bounds from your watch: Garmin Connect → Settings → Heart rate zones. Then the plan, workout reviews and the watch use the same numbers.')}</p>
+    <div class="wiz-row four">${[0, 1, 2, 3].map(i => `<label class="field">Z${i + 1} ${L('до', 'to')}<input data-hrz="${i}" type="number" inputmode="numeric" min="60" max="230" value="${b[i] || ''}" placeholder="${[115, 134, 153, 172][i]}"></label>`).join('')}</div>`;
+  if (!t) return out + `<p class="hint">${L('Пока границ нет, в плане пульс не пишется — ориентиры по ощущениям.', 'Until the bounds are in, plans don’t quote HR — effort targets instead.')}</p>`;
+  out += `<div class="section-title" style="padding-top:18px">${L('Лёгкий бег у тебя — в зоне', 'Your easy runs sit in')}</div>
+    <div class="seg" role="group">${[2, 3].map(e => `<button data-a="hr-easy" data-e="${e}" aria-pressed="${t.e === e}">Z1–Z${e}${t.auto === e && !h.easy ? L(' · авто', ' · auto') : ''}</button>`).join('')}</div>
+    <p class="hint" style="padding-top:6px">${t.usual ? L(`Средний пульс твоих пробежек за 8 недель — ${t.usual}, это Z${t.b.findIndex(x => t.usual <= x) + 1 || 5}.`, `Your runs over 8 weeks average ${t.usual} — that’s Z${t.b.findIndex(x => t.usual <= x) + 1 || 5}.`) : ''} ${L('Зоны по % от максимума — лёгкий бег обычно в Z3; зоны по порогу — в Z2.', 'Zones by % of max — easy runs usually sit in Z3; threshold-based zones — in Z2.')}</p>`;
+  // One axis for everything: the watch's zones, what the plan asks for, and where the runs actually are
+  const lo = Math.max(60, t.b[0] - 25), hi = t.b[3] + 20, x = v => ((Math.min(hi, Math.max(lo, v)) - lo) / (hi - lo) * 100).toFixed(1);
+  const edges = [lo, ...t.b, hi];
+  const bands = [[L('Лёгкий, длинный', 'Easy, long'), lo, t.easyMax, 'easy'], [L('Темп, порог', 'Tempo, threshold'), t.tempo[0], (t.hard || t.tempo)[1], 'tempo'], [L('Интервалы', 'Intervals'), t.intervals, hi, 'int']];
+  out += `<figure class="hrz" style="--sc:var(--run)" aria-label="${esc(L(`Зоны: Z1 до ${t.b[0]}, Z2 до ${t.b[1]}, Z3 до ${t.b[2]}, Z4 до ${t.b[3]}. Лёгкий до ${t.easyMax}, темп ${t.tempo[0]}–${(t.hard || t.tempo)[1]}, интервалы от ${t.intervals}.`, `Zones: Z1 to ${t.b[0]}, Z2 to ${t.b[1]}, Z3 to ${t.b[2]}, Z4 to ${t.b[3]}. Easy under ${t.easyMax}, tempo ${t.tempo[0]}–${(t.hard || t.tempo)[1]}, intervals ${t.intervals}+.`))}">
+    <div class="hrz-bar zones">${[0, 1, 2, 3, 4].map(i => `<i class="z${i + 1}" style="flex:${edges[i + 1] - edges[i]}"><span>Z${i + 1}</span></i>`).join('')}</div>
+    <div class="hrz-ticks num">${t.b.map(v => `<span style="left:${x(v)}%">${v}</span>`).join('')}</div>
+    <div class="hrz-bands">${bands.map(([n, a, z2, c]) => `<div class="hrz-band"><span class="hrz-name">${esc(n)}</span><span class="hrz-track"><i class="${c}" style="left:${x(a)}%;width:${(x(z2) - x(a)).toFixed(1)}%"></i></span><span class="hrz-val num">${c === 'int' ? L('от ', '') + a + (c === 'int' && lang !== 'ru' ? '+' : '') : c === 'easy' ? L('до ', '< ') + z2 : a + '–' + z2}</span></div>`).join('')}
+      ${t.usual ? `<div class="hrz-band"><span class="hrz-name">${L('Твои пробежки', 'Your runs')}</span><span class="hrz-track"><b class="hrz-dot" style="left:${x(t.usual)}%"></b></span><span class="hrz-val num">${t.usual}</span></div>` : ''}</div>
+    <figcaption class="hint">${L('Эти цифры план пишет в тренировках вместо названий зон. Пульс на веле обычно на 5–10 ниже, чем в беге при том же усилии.', 'The plan quotes these numbers in sessions instead of zone names. Cycling HR usually runs 5–10 lower than running at the same effort.')}</figcaption></figure>`;
+  return out;
+}
 function zonesHTML() {
   const z = state.zones || {}, ep = easyPace();
   return `<div class="section-title" id="zones">${L('Пороги и зоны', 'Thresholds and zones')}</div>
     <p class="hint" style="padding-bottom:10px">${L('Из них считаются ватты, темп и пульс в описании тренировок. Не знаешь — оставь пустым: будут ориентиры по ощущениям.', 'Watts, pace and HR in session guides come from these. Not sure — leave blank and you get effort-based targets.')}${ep ? ' ' + L(`Твой обычный темп бега по Garmin — ${paceFmt(ep)}/км.`, `Your usual run pace from Garmin is ${paceFmt(ep)}/km.`) : ''}</p>
-    <div class="wiz-row three"><label class="field">FTP, ${L('Вт', 'W')}<input data-zone="ftp" type="number" inputmode="numeric" min="80" max="500" value="${esc(z.ftp || '')}" placeholder="230"></label>
+    <div class="wiz-row"><label class="field">FTP, ${L('Вт', 'W')}<input data-zone="ftp" type="number" inputmode="numeric" min="80" max="500" value="${esc(z.ftp || '')}" placeholder="230"></label>
     <label class="field">${L('Порог бега, мин/км', 'Run threshold, min/km')}<input data-zone="thr" inputmode="numeric" value="${esc(z.thr || '')}" placeholder="4:30"></label>
-    <label class="field">${L('Пульс на пороге', 'Threshold HR')}<input data-zone="lthr" type="number" inputmode="numeric" min="100" max="210" value="${esc(z.lthr || '')}" placeholder="168"></label></div>
-    <p class="hint" style="padding-top:6px">${L('FTP — из теста 20 мин × 0,95 или ramp-теста; порог бега — темп, который держишь ~час (≈ темп 10 км у любителя). Перепроверять раз в 6–8 недель (правило 28).', 'FTP — from a 20-min test × 0.95 or a ramp test; run threshold — the pace you can hold ~an hour (≈ 10 km race pace for amateurs). Retest every 6–8 weeks (rule 28).')}</p>`;
+</div>
+    ${hrZonesHTML()}
+    <p class="hint" style="padding-top:12px">${L('FTP — из теста 20 мин × 0,95 или ramp-теста; порог бега — темп, который держишь ~час (≈ темп 10 км у любителя). Перепроверять раз в 6–8 недель (правило 28).', 'FTP — from a 20-min test × 0.95 or a ramp test; run threshold — the pace you can hold ~an hour (≈ 10 km race pace for amateurs). Retest every 6–8 weeks (rule 28).')}</p>`;
 }
 
 /* ---------- week review ---------- */
@@ -2403,14 +2498,15 @@ function analyse(d, base, sid) {
   // 1. intensity, against what was planned when there was a plan
   const z = base?.hrz, zt = z ? z.reduce((a, b) => a + b, 0) : 0;
   if (zt > 600) {
-    const easy = (z[0] + z[1]) / zt * 100, hard = (z[3] + z[4]) / 60, mid = z[2] / zt * 100;
+    const ez = hrTargets()?.e || 2, easy = z.slice(0, ez).reduce((a, b) => a + b, 0) / zt * 100, hard = z.slice(ez + 1).reduce((a, b) => a + b, 0) / 60, mid = z[ez] / zt * 100;
+    const eL = `Z1–Z${ez}`, mL = `Z${ez + 1}`, hL = ez + 2 < 5 ? `Z${ez + 2}–Z5` : "Z5";
     if (sess && EASY.has(sess.kind)) verdicts.push(easy >= 70
-      ? {head: L('Лёгкая, как задумано.', 'Easy, as planned.'), text: L(`${Math.round(easy)}% времени в Z1–Z2.`, `${Math.round(easy)}% of the time in Z1–Z2.`), tone: 'good'}
-      : {head: L('Тяжелее задуманного.', 'Harder than planned.'), text: L(`В Z1–Z2 только ${Math.round(easy)}%, в Z3 ${Math.round(mid)}% — лёгкий день ушёл в «серую зону».`, `Only ${Math.round(easy)}% in Z1–Z2, ${Math.round(mid)}% in Z3 — the easy day drifted into the grey zone.`), tone: 'warn'});
-    else if (sess?.kind === 'bike_q') verdicts.push(hard + z[2] / 60 >= 20
-      ? {head: L('Качество получилось.', 'Quality landed.'), text: L(`${Math.round(z[2] / 60 + hard)} мин в Z3–Z5.`, `${Math.round(z[2] / 60 + hard)} min in Z3–Z5.`), tone: 'good'}
-      : {head: L('Качества было мало.', 'Little quality.'), text: L(`Всего ${Math.round(z[2] / 60 + hard)} мин в Z3–Z5.`, `Only ${Math.round(z[2] / 60 + hard)} min in Z3–Z5.`), tone: 'warn'});
-    else verdicts.push({head: easy >= 70 ? L('В основном легко.', 'Mostly easy.') : hard >= 20 ? L('Тяжёлая тренировка.', 'A hard session.') : L('Смешанная интенсивность.', 'Mixed intensity.'), text: L(`Z1–Z2 ${Math.round(easy)}% · Z3 ${Math.round(mid)}% · Z4–Z5 ${Math.round(hard)} мин.`, `Z1–Z2 ${Math.round(easy)}% · Z3 ${Math.round(mid)}% · Z4–Z5 ${Math.round(hard)} min.`)});
+      ? {head: L('Лёгкая, как задумано.', 'Easy, as planned.'), text: L(`${Math.round(easy)}% времени в ${eL}.`, `${Math.round(easy)}% of the time in ${eL}.`), tone: 'good'}
+      : {head: L('Тяжелее задуманного.', 'Harder than planned.'), text: L(`В ${eL} только ${Math.round(easy)}%, в ${mL} ${Math.round(mid)}% — лёгкий день ушёл в «серую зону».`, `Only ${Math.round(easy)}% in ${eL}, ${Math.round(mid)}% in ${mL} — the easy day drifted into the grey zone.`), tone: 'warn'});
+    else if (sess?.kind === 'bike_q') verdicts.push(hard + z[ez] / 60 >= 20
+      ? {head: L('Качество получилось.', 'Quality landed.'), text: L(`${Math.round(z[ez] / 60 + hard)} мин в ${mL}–Z5.`, `${Math.round(z[ez] / 60 + hard)} min in ${mL}–Z5.`), tone: 'good'}
+      : {head: L('Качества было мало.', 'Little quality.'), text: L(`Всего ${Math.round(z[ez] / 60 + hard)} мин в ${mL}–Z5.`, `Only ${Math.round(z[ez] / 60 + hard)} min in ${mL}–Z5.`), tone: 'warn'});
+    else verdicts.push({head: easy >= 70 ? L('В основном легко.', 'Mostly easy.') : hard >= 20 ? L('Тяжёлая тренировка.', 'A hard session.') : L('Смешанная интенсивность.', 'Mixed intensity.'), text: L(`${eL} ${Math.round(easy)}% · ${mL} ${Math.round(mid)}% · ${hL} ${Math.round(hard)} мин.`, `${eL} ${Math.round(easy)}% · ${mL} ${Math.round(mid)}% · ${hL} ${Math.round(hard)} min.`)});
   }
   // 2. planned vs done
   if (sess && sess.status === 'done' && S.dur) {
@@ -2467,6 +2563,12 @@ function analyse(d, base, sid) {
 }
 
 async function openActivity(id, plan, sid) {
+  if (String(id).startsWith('hk:')) {
+    const b = (state.local.acts?.list || []).find(a => a.id === id); if (!b) return;
+    const d = {summary: {name: b.name, start: b.start, type: b.type, sport: b.sport, dur: b.min * 60, dist: b.km ? b.km * 1000 : null, up: b.elev || null, hr: b.hr || null, spd: b.km && b.min ? b.km * 1000 / (b.min * 60) : null}, series: null};
+    openSheet(activityHTML(b, d, plan, sid, false) + '', {act: id});
+    return;
+  }
   id = Number(id);
   const base = (state.local.acts?.list || []).find(a => a.id === id) || null;
   let d = actCached(id);
@@ -2653,8 +2755,9 @@ function settingsHTML() {
     h += `<div class="section-title">${L('Подключения', 'Connections')}</div><div class="list">`;
     h += cals.map(c => `<div class="row"><span class="t"><b>${icon('calendar', 16)} ${esc(c.label)}</b><span>${c.last_error ? (c.last_error === 'google_revoked' ? L('Доступ отозван — подключи заново', 'Access revoked — connect again') : L('Не загрузился: ', 'Failed: ') + esc(c.last_error)) : c.checked_at ? L('Обновлён ', 'Updated ') + new Date(c.checked_at).toLocaleString(lang === 'ru' ? 'ru-RU' : 'en-GB', {day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'}) : ''}</span></span><button class="nav-btn" data-a="cal-remove" data-id="${esc(c.id)}">${L('Убрать', 'Remove')}</button></div>`).join('');
     if (!cals.length) h += `<div class="row"><span class="t"><b>${icon('calendar', 16)} ${L('Календарь', 'Calendar')}</b><span>${L('Не подключён — тренировки встают в рабочие рамки без учёта встреч', 'Not connected — sessions ignore your meetings')}</span></span></div>`;
+    if (NATIVE) h += `<div class="row"><span class="t"><b>Apple Health</b><span>${hkOn() ? L('Подключено · тренировки со всех часов', 'Connected · workouts from any watch') : L('Не подключено', 'Not connected')}</span></span>${hkOn() ? `<button class="nav-btn" data-a="health-off">${L('Выключить', 'Turn off')}</button>` : `<button class="nav-btn" data-a="health-connect">${L('Подключить', 'Connect')}</button>`}</div>`;
     h += `<div class="row"><span class="t"><b>Garmin</b><span>${gl ? (a?.list ? L(`${a.list.length} активностей с ${since}`, `${a.list.length} activities since ${since}`) : L('Подключён', 'Linked')) + (a?.error ? ' · ' + esc(a.error) : '') : L('Не подключён', 'Not linked')}</span></span>${gl ? `<button class="nav-btn" data-a="garmin-unlink" style="color:var(--danger)">${L('Отвязать', 'Unlink')}</button>` : ''}</div></div>`;
-    h += `<div class="stack set-actions">${cloud.google ? `<button class="btn quiet" data-a="google" ${cloud.calBusy ? 'disabled' : ''}>${L('Подключить Google Календарь', 'Connect Google Calendar')}</button>` : ''}
+    h += `<div class="stack set-actions">${cloud.google && !NATIVE ? `<button class="btn quiet" data-a="google" ${cloud.calBusy ? 'disabled' : ''}>${L('Подключить Google Календарь', 'Connect Google Calendar')}</button>` : ''}
       ${gl ? `<button class="btn link" data-a="history" ${histBusy.on ? 'disabled' : ''}>${histBusy.on ? L('Загружаю…', 'Loading…') : L('Подтянуть историю Garmin за год', 'Pull a year of Garmin history')}</button>` : ''}</div>`;
     h += `<details class="set-more"><summary>${L('Другой календарь — по ссылке iCal или файлом', 'Another calendar — by iCal link or file')}</summary>
       <p class="hint">${L('Apple, Outlook, рабочий. В Google: Настройки → календарь → «Секретный адрес в формате iCal». Ссылка хранится на сервере, приложение видит только занятость и названия.', 'Apple, Outlook, work. In Google: Settings → your calendar → Secret address in iCal format. The link stays on the server; the app sees only busy times and titles.')}</p>
@@ -2774,7 +2877,7 @@ document.addEventListener('click', ev => {
     openChat(); const inp = $('#chatInput'); inp.value = L('Про план на следующую неделю: ', 'About next week’s plan: '); inp.focus(); return;
   }
   if (a === 'weekly-make') { const wk2 = el.dataset.wk; makeWeekly(wk2); proposalSheet(wk2); return; }
-  if (a === 'chat-act') { const id = Number(el.dataset.id), b = (state.local.acts?.list || []).find(x => x.id === id); return openChat(L(`Разбери тренировку: ${b?.name || 'эта'}, ${(b?.start || '').slice(0, 10)}`, `Review this workout: ${b?.name || ''}, ${(b?.start || '').slice(0, 10)}`), {act: id}); }
+  if (a === 'chat-act') { const id = String(el.dataset.id).startsWith('hk:') ? el.dataset.id : Number(el.dataset.id), b = (state.local.acts?.list || []).find(x => x.id === id); return openChat(L(`Разбери тренировку: ${b?.name || 'эта'}, ${(b?.start || '').slice(0, 10)}`, `Review this workout: ${b?.name || ''}, ${(b?.start || '').slice(0, 10)}`), {act: id}); }
   if (a === 'chip') { const inp = $('#cmdInput'); inp.value = el.dataset.t; inp.focus(); return; }
   if (a === 'wk') { view.wk = ymd(addDays(parseYmd(wk), +el.dataset.d)); lastChange = null; render(); if (cloud.user && cloud.cals?.length && todayIdx(view.wk) <= 6) loadBusy(view.wk); ensureHistory(view.wk); return; }
   if (a === 'wk-today') { view.wk = ymd(mondayOf(new Date())); render(); return; }
@@ -2789,6 +2892,7 @@ document.addEventListener('click', ev => {
   if (a === 'block-add') { state.prefs.blocks = [...(state.prefs.blocks || []), {id: rid(), label: L('Семья', 'Family'), days: [5], from: '08:00', to: '12:00'}]; persist(); replanOpen(); render(); return; }
   if (a === 'block-del') { state.prefs.blocks = (state.prefs.blocks || []).filter(b => b.id !== el.dataset.id); persist(); replanOpen(); render(); return; }
   if (a === 'block-day') { const b = (state.prefs.blocks || []).find(x => x.id === el.dataset.id), d = +el.dataset.d; if (b) { b.days = b.days.includes(d) ? b.days.filter(x => x !== d) : [...b.days, d].sort(); persist(); replanOpen(); render(); } return; }
+  if (a === 'hr-easy') { const h = {...(state.zones?.hr || {}), easy: +el.dataset.e}; state.zones = {...(state.zones || {}), hr: h}; persist(); render(); return; }
   if (a === 'zones-open') { closeSheet(); view.v = 'settings'; render(); setTimeout(() => document.getElementById('zones')?.scrollIntoView({block: 'start'}), 50); return; }
   if (a === 'program') { view.v = 'program'; render(); scrollTo(0, 0); if (cloud.user && state.local.acts?.linked) ensureHist12().then(() => { if (view.v === 'program') render(); }); return; }
   if (a === 'undo') return undo(wk);
@@ -2860,6 +2964,9 @@ document.addEventListener('click', ev => {
   if (a === 'onb-skip' || a === 'onb-later') { try { localStorage.removeItem(ONB_KEY); } catch {} if (a === 'onb-skip' && !cloud.user) { state.onboard = {done: false, skipped: isoNow()}; persist(); } closeSheet(); render(); return; }
   if (a === 'onb-health') { onb.health = el.dataset.v; state.health = {...(state.health || {}), track: onb.health === 'yes'}; persist(); return onbRender(); }
   if (a === 'onb-done') return onbFinish(true);
+  if (a === 'onb-health-connect') { onb.busy = true; onb.err = ''; onbRender(); connectHealth().then(e => { onb.busy = false; onb.err = e === 'denied' ? 'health_denied' : e ? 'health_unavailable' : ''; onbRender(); }); return; }
+  if (a === 'health-connect') { connectHealth().then(e => { toast(e ? onbErr(e === 'denied' ? 'health_denied' : 'health_unavailable') : L('Apple Health подключено', 'Apple Health connected')); render(); }); return; }
+  if (a === 'health-off') { state.local.health = {on: false}; state.local.acts = null; saveLocal(); loadActs(true); render(); return; }
   if (a === 'invite-new') return loadInvites(true);
   if (a === 'invite-copy') { const url = inviteLink(el.dataset.code); (navigator.share ? navigator.share({title: L('Неделя', 'Week'), text: L('Приглашение в «Неделю»', 'An invite to Week'), url}).catch(() => {}) : navigator.clipboard.writeText(url).then(() => toast(L('Ссылка скопирована', 'Link copied')))); return; }
   if (a === 'garmin-unlink') { if (!confirm(L('Отвязать Garmin? Ключ общий с «Залом» — там он тоже отвяжется.', 'Unlink Garmin? The key is shared with the gym app — it will be unlinked there too.'))) return; fn('garmin-unlink').then(d => { if (!d.error) { cloud.me = d; state.local.acts = null; saveLocal(); } render(); }); return; }
@@ -2916,6 +3023,14 @@ document.addEventListener('change', ev => {
     else if (f === 'anchor') tpl.anchor = el.checked; else if (f === 'kind') { tpl.kind = el.value; tpl.min = KINDS[el.value].min; delete tpl.detail; delete tpl.key; render(); } else tpl[f] = el.value;
     persist(); return;
   }
+  if (el.dataset.hrz != null) {
+    const h = {...(state.zones?.hr || {})}, b = (h.b || [0, 0, 0, 0]).slice();
+    b[+el.dataset.hrz] = Math.round(+el.value) || 0; h.b = b;
+    state.zones = {...(state.zones || {}), hr: h}; delete state.zones.lthr;
+    persist();
+    if (hrZonesOk(b) || b.every(v => v > 0)) { if (!hrZonesOk(b)) toast(L('Границы должны расти: Z1 < Z2 < Z3 < Z4', 'Bounds must rise: Z1 < Z2 < Z3 < Z4')); render(); }
+    return;
+  }
   if (el.dataset.zone != null) {
     const f = el.dataset.zone, v = el.value.trim();
     state.zones = {...(state.zones || {})};
@@ -2966,7 +3081,7 @@ document.addEventListener('input', ev => { if (ev.target.id === 'chatInput') gro
 document.addEventListener('pointerdown', ev => { if (ev.target.closest('.chip')) ev.preventDefault(); });
 
 // Debug hook for local testing (busy/acts injection); harmless in production.
-window.trainDebug = {get state() { return state; }, get cloud() { return cloud; }, openChat, chatContext, openWizard, openOnboarding, onb, onbGo, wiz, rulesPlan, projectOutlook, outlookWeek, buildPlan, applyWeekPlan, makeWeekly, maybeWeekly, weeklyDue, planContext, proposalSheet, view, run, parse, onBusy, matchActs, render, persist, place, setBusy(wk, events) { state.local.busy[wk] = {at: Date.now(), events}; saveLocal(); onBusy(wk); }, setActs(list) { state.local.acts = {at: Date.now(), list, linked: true}; saveLocal(); for (const wk of Object.keys(state.weeks)) { const week = state.weeks[wk], before = snapshot(week), lines = matchActs(wk, week); if (lines.length) commit(wk, week, before, 'Garmin', lines); } render(); }};
+window.trainDebug = {get state() { return state; }, get cloud() { return cloud; }, openChat, chatContext, openWizard, openOnboarding, onb, onbGo, hrTargets, hrText, wiz, rulesPlan, projectOutlook, outlookWeek, buildPlan, applyWeekPlan, makeWeekly, maybeWeekly, weeklyDue, planContext, proposalSheet, view, run, parse, onBusy, matchActs, render, persist, place, setBusy(wk, events) { state.local.busy[wk] = {at: Date.now(), events}; saveLocal(); onBusy(wk); }, setActs(list) { state.local.acts = {at: Date.now(), list, linked: true}; saveLocal(); for (const wk of Object.keys(state.weeks)) { const week = state.weeks[wk], before = snapshot(week), lines = matchActs(wk, week); if (lines.length) commit(wk, week, before, 'Garmin', lines); } render(); }};
 
 // Back from Google's consent screen: #google=ok or #google=<reason>.
 const googleBack = (location.hash.match(/google=([\w-]+)/) || [])[1];
