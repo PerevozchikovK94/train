@@ -107,7 +107,25 @@ function fill(d) {
   if (!d.onboard && (Object.keys(d.weeks || {}).length || d.plan)) d.onboard = {done: true, at: null};
   return d;
 }
-const synced = () => { const {local, dirty, syncedAt, syncedUser, ...rest} = state; return rest; };
+const synced = () => { const {local, dirty, syncedAt, syncedUser, brief, ...rest} = state; return {...rest, brief: briefs()}; };
+// What the morning message says on each of the next 14 days: the day's sessions with time and what to do (beats, not
+// zone names), today's pain gate applied. Rest days are left out — no message on them.
+function briefs() {
+  const out = {}, t0 = parseYmd(todayStr());
+  try {
+    for (let i = 0; i < 14; i++) {
+      const d = addDays(t0, i), date = ymd(d), wk = ymd(mondayOf(d)), di = (d.getDay() + 6) % 7, week = state.weeks?.[wk];
+      if (!week || week.paused) continue;
+      const ss = week.sessions.map(x => effective(wk, x)).filter(x => x.day === di && x.status === 'planned').sort((a, b) => (a.start ?? 0) - (b.start ?? 0));
+      if (!ss.length) continue;
+      const head = ss.map(x => `${kName(x.kind)}, ${fDur(x.min)}${x.start != null ? L(' в ', ' at ') + hm(x.start) : ''}`).join(' · ');
+      let body = ss.map(x => [sDetail(x), x.caution].filter(Boolean).join('. ')).join(' · ');
+      if (state.health?.track) body += L(' · Отметь, как сегодня с болью.', ' · Log how the pain is today.');
+      out[date] = {t: L('Сегодня: ', 'Today: ') + head, b: body.slice(0, 240)};
+    }
+  } catch (e) { console.warn('brief', e); }
+  return out;
+}
 let rev = 0; // bumps on every local change, so a change made while a push is in flight stays dirty
 function persist() {
   state.dirty = true; rev++;
@@ -2098,6 +2116,90 @@ function hrZonesHTML() {
     <figcaption class="hint">${L('Эти цифры план пишет в тренировках вместо названий зон. Пульс на веле обычно на 5–10 ниже, чем в беге при том же усилии.', 'The plan quotes these numbers in sessions instead of zone names. Cycling HR usually runs 5–10 lower than running at the same effort.')}</figcaption></figure>`;
   return out;
 }
+/* ---------- thresholds from data ---------- */
+// Garmin's activity summaries carry the best 20/60-min power, the fastest 5/10 km inside a run and the peak HR.
+// Training sessions aren't all-out tests, so every estimate here is a floor: it errs low and slow, which is the safe side —
+// targets come out a little easy, never too hard. FTP ±5% either way (rule 25); retest every 6–8 weeks (rule 28).
+const RIEGEL = 1.06;
+function thrEstimates() {
+  const list = state.local.acts?.list || [], s90 = ymd(addDays(new Date(), -90)), s180 = ymd(addDays(new Date(), -180));
+  const recent = list.filter(a => a.start.slice(0, 10) >= s90), out = {};
+  const rides = recent.filter(a => a.sport === 'bike' && (a.p20 || a.p60));
+  if (rides.length) {
+    const b20 = rides.reduce((m, a) => (a.p20 || 0) > (m?.p20 || 0) ? a : m, null), b60 = rides.reduce((m, a) => (a.p60 || 0) > (m?.p60 || 0) ? a : m, null);
+    const f20 = b20?.p20 ? Math.round(b20.p20 * 0.95) : 0, f60 = b60?.p60 || 0;
+    const v = Math.max(f20, f60);
+    if (v >= 80 && v <= 500) out.ftp = f20 >= f60 ? {v, raw: b20.p20, dur: 20, date: b20.start.slice(0, 10), n: rides.length} : {v, raw: f60, dur: 60, date: b60.start.slice(0, 10), n: rides.length};
+  }
+  // Run threshold ≈ the pace held for about an hour ≈ 10 km pace for amateurs; a 5 km best goes to 10 km by Riegel.
+  const runs = recent.filter(a => a.sport === 'run' && (a.f5 || a.f10));
+  let best = null;
+  for (const a of runs) {
+    if (a.f10) { const pace = a.f10 / 10; if (!best || pace < best.v) best = {v: pace, raw: a.f10, km: 10, date: a.start.slice(0, 10)}; }
+    if (a.f5) { const pace = a.f5 * Math.pow(2, RIEGEL) / 10; if (!best || pace < best.v) best = {v: pace, raw: a.f5, km: 5, date: a.start.slice(0, 10)}; }
+  }
+  if (best && best.v >= 150 && best.v <= 600) out.thr = {...best, v: Math.round(best.v), n: runs.length};
+  // Peak HR over half a year from runs and rides; a lone spike 8+ above the next one is an optical glitch.
+  const peaks = list.filter(a => a.start.slice(0, 10) >= s180 && a.hrMax && (a.sport === 'run' || a.sport === 'bike')).sort((a, b) => b.hrMax - a.hrMax);
+  if (peaks.length >= 3) { const top = peaks[0].hrMax - peaks[1].hrMax > 8 ? peaks[1] : peaks[0]; out.hrMax = {v: top.hrMax, date: top.start.slice(0, 10), n: peaks.length}; }
+  return out;
+}
+// The max HR the watch's zones are cut from, when they are the usual %max split (60/70/80/90%).
+function zonesMax(b) {
+  if (!hrZonesOk(b)) return null;
+  const M = b[3] / 0.9;
+  return [0.6, 0.7, 0.8].every((f, i) => Math.abs(b[i] - M * f) <= 2) ? Math.round(M) : null;
+}
+const pctZones = M => [0.6, 0.7, 0.8, 0.9].map(f => Math.round(M * f));
+// Old caches came from before the server sent these fields: refetch 90 days once.
+const thrFetch = {done: false};
+async function ensureThrData() {
+  if (thrFetch.done || hkOn() || !state.local.acts?.linked) return;
+  thrFetch.done = true;
+  const s90 = ymd(addDays(new Date(), -90)), recent = (state.local.acts.list || []).filter(a => a.start.slice(0, 10) >= s90 && (a.sport === 'run' || a.sport === 'bike'));
+  if (!recent.length || recent.some(a => 'hrMax' in a)) return;
+  if (await loadHistory(s90, ymd(new Date())) != null) render();
+}
+const fDate = d => parseYmd(d).toLocaleDateString(lang === 'ru' ? 'ru-RU' : 'en-GB', {day: 'numeric', month: 'short'});
+// Which estimates are worth a word: none set yet, a better one than set, or the set one is 6+ weeks old and off by 3%+.
+function thrNews() {
+  const e = thrEstimates(), z = state.zones || {}, at = z.at || {}, old = f => !at[f] || (Date.now() - parseYmd(at[f])) / 864e5 >= 42, out = [];
+  if (e.ftp) { const c = +z.ftp; if (!c || e.ftp.v >= c * 1.03 || (old('ftp') && Math.abs(e.ftp.v - c) >= c * 0.03)) out.push('ftp'); }
+  if (e.thr) { const c = parsePace(z.thr); if (!c || e.thr.v <= c - 5 || (old('thr') && Math.abs(e.thr.v - c) >= 5)) out.push('thr'); }
+  return {e, out, sig: out.map(f => f + ':' + e[f].v).join(',')};
+}
+function thrSuggestHTML() {
+  const {e, out} = thrNews(), z = state.zones || {}, t = hrTargets();
+  const rows = [];
+  if (e.ftp) {
+    const c = +z.ftp, how = L(`лучшие ${e.ftp.dur} мин за 90 дней — ${e.ftp.raw} Вт (${fDate(e.ftp.date)})${e.ftp.dur === 20 ? ' × 0,95' : ''}`, `best ${e.ftp.dur} min in 90 days — ${e.ftp.raw} W (${fDate(e.ftp.date)})${e.ftp.dur === 20 ? ' × 0.95' : ''}`);
+    const note = c && c > e.ftp.v * 1.03 ? L(' Твой FTP выше — нормально: оценка по тренировкам, не по тесту.', ' Yours is higher — fine: this is from training, not a test.') : '';
+    rows.push(`<div class="row thr-row"><span class="t"><b>FTP ≈ ${e.ftp.v} ${L('Вт', 'W')}</b><span>${how}.${note}</span></span>${out.includes('ftp') ? `<button class="nav-btn" data-a="thr-take" data-f="ftp">${L('Взять', 'Use')}</button>` : ''}</div>`);
+  }
+  if (e.thr) {
+    const how = L(`самые быстрые ${e.thr.km} км внутри тренировки — ${hms(e.thr.raw)} (${fDate(e.thr.date)})${e.thr.km === 5 ? ', пересчёт на 10 км' : ''}`, `fastest ${e.thr.km} km inside a run — ${hms(e.thr.raw)} (${fDate(e.thr.date)})${e.thr.km === 5 ? ', scaled to 10 km' : ''}`);
+    rows.push(`<div class="row thr-row"><span class="t"><b>${L('Порог бега', 'Run threshold')} ≈ ${paceFmt(e.thr.v)}/${L('км', 'km')}</b><span>${how}.</span></span>${out.includes('thr') ? `<button class="nav-btn" data-a="thr-take" data-f="thr">${L('Взять', 'Use')}</button>` : ''}</div>`);
+  }
+  if (e.hrMax) {
+    const M = t ? zonesMax(t.b) : null;
+    let txt = L(`За полгода пульс доходил до ${e.hrMax.v} (${fDate(e.hrMax.date)}). Реальный максимум не ниже.`, `Over six months HR peaked at ${e.hrMax.v} (${fDate(e.hrMax.date)}). Your true max is at least that.`), btn = '';
+    if (M && e.hrMax.v > M + 2) txt += ' ' + L(`Зоны на часах посчитаны от ${M} — это ниже. Обнови максимум в Garmin и перепиши зоны.`, `Your watch zones are cut from ${M} — lower than that. Update max HR in Garmin and copy the zones again.`);
+    else if (M) txt += ' ' + L(`Зоны на часах — от максимума ${M}, сходится.`, `Your watch zones are cut from a max of ${M} — consistent.`);
+    else if (!t) { const zb = pctZones(e.hrMax.v); txt += ' ' + L(`Зоны от него (60/70/80/90%): Z1 до ${zb[0]}, Z2 до ${zb[1]}, Z3 до ${zb[2]}, Z4 до ${zb[3]} — чуть ниже настоящих, это безопасная сторона. Точнее — переписать из часов.`, `Zones from it (60/70/80/90%): Z1 to ${zb[0]}, Z2 to ${zb[1]}, Z3 to ${zb[2]}, Z4 to ${zb[3]} — a little low, the safe side. Copying from the watch is better.`); btn = `<button class="nav-btn" data-a="thr-take" data-f="hr">${L('Взять', 'Use')}</button>`; }
+    rows.push(`<div class="row thr-row"><span class="t"><b>${L('Макс. пульс', 'Max HR')} ≥ ${e.hrMax.v}</b><span>${txt}</span></span>${btn}</div>`);
+  }
+  if (!rows.length) return '';
+  return `<div class="section-title" style="padding-top:14px">${L('Из твоих тренировок', 'From your training')}</div><div class="list">${rows.join('')}</div>
+    <p class="hint" style="padding-top:6px">${L('Тренировки — не тест на максимум, поэтому оценки скорее занижены: зоны выйдут чуть легче, не тяжелее. Тест 20 мин или старт дадут точнее.', 'Training isn’t an all-out test, so these lean low: zones come out a touch easy, never too hard. A 20-min test or a race is more precise.')}</p>`;
+}
+function thrNudgeHTML() {
+  if (!state.plan) return '';
+  const n = thrNews(), sports = new Set(state.plan.sports || []);
+  const out = n.out.filter(f => sports.has(f === 'ftp' ? 'bike' : 'run'));
+  if (!out.length || state.zones?.seen === n.sig) return '';
+  const what = out.map(f => f === 'ftp' ? `FTP ≈ ${n.e.ftp.v} ${L('Вт', 'W')}` : `${L('порог бега', 'run threshold')} ≈ ${paceFmt(n.e.thr.v)}/${L('км', 'km')}`).join(', ');
+  return `<button class="nudge" data-a="thr-nudge" data-sig="${esc(n.sig)}"><span>${L('По тренировкам', 'From your training')}: ${what}</span><span class="nudge-go">${L('Посмотреть', 'Review')} ›</span></button>`;
+}
 function zonesHTML() {
   const z = state.zones || {}, ep = easyPace();
   return `<div class="section-title" id="zones">${L('Пороги и зоны', 'Thresholds and zones')}</div>
@@ -2105,6 +2207,7 @@ function zonesHTML() {
     <div class="wiz-row"><label class="field">FTP, ${L('Вт', 'W')}<input data-zone="ftp" type="number" inputmode="numeric" min="80" max="500" value="${esc(z.ftp || '')}" placeholder="230"></label>
     <label class="field">${L('Порог бега, мин/км', 'Run threshold, min/km')}<input data-zone="thr" inputmode="numeric" value="${esc(z.thr || '')}" placeholder="4:30"></label>
 </div>
+    ${thrSuggestHTML()}
     ${hrZonesHTML()}
     <p class="hint" style="padding-top:12px">${L('FTP — из теста 20 мин × 0,95 или ramp-теста; порог бега — темп, который держишь ~час (≈ темп 10 км у любителя). Перепроверять раз в 6–8 недель (правило 28).', 'FTP — from a 20-min test × 0.95 or a ramp test; run threshold — the pace you can hold ~an hour (≈ 10 km race pace for amateurs). Retest every 6–8 weeks (rule 28).')}</p>`;
 }
@@ -2350,6 +2453,7 @@ function pauseRpeHTML(wk, ti) {
   let h = '';
   if (state.pause && ti >= 0 && ti <= 6) h += `<button class="nudge" data-a="resume"><span>${L(`Пауза с ${fDay(state.pause.from)} — ${PAUSE_WHY[state.pause.reason]?.[0] || ''}`, `Paused since ${fDay(state.pause.from)} — ${PAUSE_WHY[state.pause.reason]?.[1] || ''}`)}</span><span class="nudge-go">${L('Вернуться', 'I’m back')} ›</span></button>`;
   const r = ti >= 0 && ti <= 6 ? rpeDue(wk) : null;
+  if (ti >= 0 && ti <= 6) h += thrNudgeHTML();
   if (r) h += `<button class="nudge" data-a="rpe-open" data-id="${r.id}"><span>${L(`Как ощущалась «${kName(r.kind)}»? Оцени усилие`, `How did “${kName(r.kind)}” feel? Rate the effort`)}</span><span class="nudge-go">1–10 ›</span></button>`;
   return h;
 }
@@ -2792,15 +2896,93 @@ function settingsHTML() {
   h += `<div class="stack" style="padding-top:12px"><button class="btn quiet" data-a="tpl-add">${L('Добавить тренировку', 'Add a session')}</button><button class="btn link" data-a="rebuild">${L('Пересобрать эту неделю по обычной', 'Rebuild this week from the usual one')}</button></div></details>`;
 
   // Body: thresholds and injury
+  ensureThrData();
   h += zonesHTML();
   h += healthHTML();
 
+  h += pushHTML();
   // The assistant's allowance, invites (admins), language and privacy
   if (cloud.me?.ai) { const u = cloud.me.ai; h += `<div class="section-title">${L('Ассистент', 'Assistant')}</div><p class="hint">${u.unlimited ? L('Без ограничений.', 'No limits.') : L(`Сегодня: ${u.chat.used} из ${u.chat.limit} сообщений и ${u.plan.used} из ${u.plan.limit} сборок плана. Обновляется в полночь UTC.`, `Today: ${u.chat.used} of ${u.chat.limit} messages and ${u.plan.used} of ${u.plan.limit} plan builds. Resets at midnight UTC.`)}</p>`; }
   h += invitesHTML();
   h += `<div class="section-title">${L('Язык', 'Language')}</div><div class="seg" role="group"><button data-a="lang" data-l="ru" aria-pressed="${lang === 'ru'}">Русский</button><button data-a="lang" data-l="en" aria-pressed="${lang === 'en'}">English</button></div>
     <p class="hint" style="padding:24px 0 8px"><a href="privacy.html" style="color:var(--accent)">${L('Конфиденциальность', 'Privacy')}</a></p>`;
   return h + '</main>';
+}
+/* ---------- morning message (Web Push) ---------- */
+// The server (train-push) sends the day's brief at the chosen local time. iPhone needs the app on the home screen
+// (iOS 16.4+); the native shell will use local notifications instead, so it's hidden there.
+const push = {on: null, busy: false, at: null, endpoint: null, loading: false};
+const IOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const STANDALONE = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const pushOk = () => !NATIVE && 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+const b64uBytes = s => { const t = s.replace(/-/g, '+').replace(/_/g, '/'); return Uint8Array.from(atob(t + '==='.slice((t.length + 3) % 4)), c => c.charCodeAt(0)); };
+async function pushCall(action, extra = {}) {
+  if (!cloud.client || !cloud.user) return {error: 'signed_out'};
+  const {data, error} = await cloud.client.functions.invoke('train-push', {body: {action, ...extra}});
+  if (error) { let body = null; try { body = await error.context?.json?.(); } catch {} return {error: body?.error || 'unavailable'}; }
+  return data;
+}
+async function pushSub() { const reg = await navigator.serviceWorker.getRegistration(); return reg ? reg.pushManager.getSubscription() : null; }
+async function pushRefresh() {
+  if (push.loading || !pushOk() || !cloud.user) return;
+  push.loading = true;
+  try {
+    const sub = await pushSub();
+    push.endpoint = sub?.endpoint || null;
+    if (!sub) { push.on = false; return; }
+    const d = await pushCall('status', {endpoint: sub.endpoint});
+    push.on = !!d.on; if (d.at) push.at = d.at;
+  } catch { push.on = false; } finally { push.loading = false; render(); }
+}
+// The brief has to be on the server before the first morning: push the state now.
+async function pushBrief() { state.dirty = true; rev++; saveLocal(); await sync(); }
+async function pushEnable() {
+  if (push.busy) return; push.busy = true; render();
+  try {
+    if (await Notification.requestPermission() !== 'granted') { toast(L('Уведомления запрещены — включи их для «Недели» в настройках телефона', 'Notifications are blocked — allow them for this app in your phone settings')); return; }
+    const k = await pushCall('key'); if (!k.publicKey) throw new Error(k.error);
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription() || await reg.pushManager.subscribe({userVisibleOnly: true, applicationServerKey: b64uBytes(k.publicKey)});
+    const at = push.at || '07:30';
+    const d = await pushCall('save', {sub: sub.toJSON(), tz: Intl.DateTimeFormat().resolvedOptions().timeZone, at, lang});
+    if (d.error) throw new Error(d.error);
+    push.on = true; push.at = at; push.endpoint = sub.endpoint;
+    await pushBrief();
+    toast(L(`Готово — утром в ${at}`, `Done — every morning at ${at}`));
+  } catch (e) { console.warn('push', e); toast(L('Не получилось включить — попробуй ещё раз', 'Couldn’t turn it on — try again')); }
+  finally { push.busy = false; render(); }
+}
+async function pushDisable() {
+  push.busy = true; render();
+  try { const sub = await pushSub(); if (sub) { await pushCall('remove', {endpoint: sub.endpoint}); await sub.unsubscribe(); } push.on = false; }
+  finally { push.busy = false; render(); }
+}
+async function pushTime(at) {
+  push.at = at;
+  const sub = await pushSub(); if (!sub || !push.on) return;
+  const d = await pushCall('save', {sub: sub.toJSON(), tz: Intl.DateTimeFormat().resolvedOptions().timeZone, at, lang});
+  toast(d.error ? L('Не сохранилось — проверь сеть', 'Didn’t save — check the connection') : L(`Утром в ${at}`, `Mornings at ${at}`));
+}
+async function pushTest() {
+  push.busy = true; render();
+  try {
+    await pushBrief();
+    const sub = await pushSub(), d = sub ? await pushCall('test', {endpoint: sub.endpoint}) : {error: 'not_subscribed'};
+    if (d.error === 'gone' || d.error === 'not_subscribed') { push.on = false; toast(L('Подписка пропала — включи заново', 'The subscription is gone — turn it on again')); }
+    else toast(d.error ? L('Не дошло — попробуй позже', 'Didn’t arrive — try later') : L('Отправил — должно прийти через пару секунд', 'Sent — should arrive in a few seconds'));
+  } finally { push.busy = false; render(); }
+}
+function pushHTML() {
+  if (NATIVE || !cloud.user || !cloud.me?.member) return '';
+  let h = `<div class="section-title">${L('Утреннее сообщение', 'Morning message')}</div>`;
+  const what = L('Утром — что сегодня: тренировка, время, что делать и пульс. В дни отдыха не приходит.', 'Each morning — today’s session, time, what to do and HR. Nothing on rest days.');
+  if (IOS && !STANDALONE) return h + `<p class="hint">${what} ${L('На iPhone уведомления работают, когда «Неделя» на экране «Домой»: в Safari «Поделиться» → «На экран „Домой“», открыть оттуда и включить здесь.', 'On iPhone, notifications work once the app is on the home screen: Safari Share → Add to Home Screen, open it from there and turn this on.')}</p>`;
+  if (!pushOk()) return h + `<p class="hint">${what} ${L('Этот браузер не умеет push-уведомления.', 'This browser can’t do push notifications.')}</p>`;
+  if (push.on == null) { pushRefresh(); return h + `<p class="hint">${L('Проверяю…', 'Checking…')}</p>`; }
+  h += `<p class="hint" style="padding-bottom:8px">${what}</p>`;
+  if (!push.on) return h + `<div class="stack"><button class="btn quiet" data-a="push-on" ${push.busy ? 'disabled' : ''}>${push.busy ? L('Включаю…', 'Turning on…') : L('Присылать по утрам', 'Send it every morning')}</button></div>`;
+  return h + `<div class="wiz-row"><label class="field">${L('Во сколько', 'At')}<input id="pushAt" type="time" value="${esc(push.at || '07:30')}"></label></div>
+    <div class="stack"><button class="btn quiet" data-a="push-test" ${push.busy ? 'disabled' : ''}>${L('Прислать сегодняшнее сейчас', 'Send today’s now')}</button><button class="btn link" data-a="push-off" ${push.busy ? 'disabled' : ''}>${L('Не присылать', 'Stop sending')}</button></div>`;
 }
 function acctHTML() {
   if (!cloud.client) return '';
@@ -2893,7 +3075,20 @@ document.addEventListener('click', ev => {
   if (a === 'block-del') { state.prefs.blocks = (state.prefs.blocks || []).filter(b => b.id !== el.dataset.id); persist(); replanOpen(); render(); return; }
   if (a === 'block-day') { const b = (state.prefs.blocks || []).find(x => x.id === el.dataset.id), d = +el.dataset.d; if (b) { b.days = b.days.includes(d) ? b.days.filter(x => x !== d) : [...b.days, d].sort(); persist(); replanOpen(); render(); } return; }
   if (a === 'hr-easy') { const h = {...(state.zones?.hr || {}), easy: +el.dataset.e}; state.zones = {...(state.zones || {}), hr: h}; persist(); render(); return; }
-  if (a === 'zones-open') { closeSheet(); view.v = 'settings'; render(); setTimeout(() => document.getElementById('zones')?.scrollIntoView({block: 'start'}), 50); return; }
+  if (a === 'push-on') return pushEnable();
+  if (a === 'push-off') return pushDisable();
+  if (a === 'push-test') return pushTest();
+  if (a === 'thr-take') {
+    const e = thrEstimates(), f = el.dataset.f, z = {...(state.zones || {})};
+    if (f === 'ftp' && e.ftp) z.ftp = e.ftp.v;
+    else if (f === 'thr' && e.thr) z.thr = paceFmt(e.thr.v);
+    else if (f === 'hr' && e.hrMax) z.hr = {...(z.hr || {}), b: pctZones(e.hrMax.v)};
+    else return;
+    if (f !== 'hr') z.at = {...(z.at || {}), [f]: todayStr()};
+    state.zones = z; persist(); render(); toast(L('Готово — цифры в тренировках обновились', 'Done — session targets updated')); return;
+  }
+  if (a === 'thr-nudge') { state.zones = {...(state.zones || {}), seen: el.dataset.sig}; persist(); }
+  if (a === 'zones-open' || a === 'thr-nudge') { closeSheet(); view.v = 'settings'; render(); setTimeout(() => document.getElementById('zones')?.scrollIntoView({block: 'start'}), 50); return; }
   if (a === 'program') { view.v = 'program'; render(); scrollTo(0, 0); if (cloud.user && state.local.acts?.linked) ensureHist12().then(() => { if (view.v === 'program') render(); }); return; }
   if (a === 'undo') return undo(wk);
   if (a === 'dismiss') { lastChange = null; render(); return; }
@@ -3017,6 +3212,7 @@ function runOn(s, ru, en) {
 document.addEventListener('change', ev => {
   const el = ev.target;
   if (el.id === 'icsFile' && el.files[0]) return icsFile(el.files[0]);
+  if (el.id === 'pushAt' && /^\d{2}:\d{2}$/.test(el.value)) return pushTime(el.value);
   if (el.dataset.tpl != null) {
     const tpl = state.template[+el.dataset.tpl], f = el.dataset.f;
     if (f === 'day') tpl.day = +el.value; else if (f === 'min') tpl.min = Math.max(15, Math.min(480, +el.value || 45));
@@ -3037,6 +3233,7 @@ document.addEventListener('change', ev => {
     if (!v) delete state.zones[f];
     else if (f === 'thr') { if (parsePace(v)) state.zones.thr = v.replace('.', ':'); else return toast(L('Темп — в формате 4:30', 'Pace as 4:30')); }
     else state.zones[f] = Math.round(+v) || undefined;
+    if (v) state.zones.at = {...(state.zones.at || {}), [f]: todayStr()};
     persist(); return;
   }
   if (el.dataset.block != null) {
@@ -3081,7 +3278,7 @@ document.addEventListener('input', ev => { if (ev.target.id === 'chatInput') gro
 document.addEventListener('pointerdown', ev => { if (ev.target.closest('.chip')) ev.preventDefault(); });
 
 // Debug hook for local testing (busy/acts injection); harmless in production.
-window.trainDebug = {get state() { return state; }, get cloud() { return cloud; }, openChat, chatContext, openWizard, openOnboarding, onb, onbGo, hrTargets, hrText, wiz, rulesPlan, projectOutlook, outlookWeek, buildPlan, applyWeekPlan, makeWeekly, maybeWeekly, weeklyDue, planContext, proposalSheet, view, run, parse, onBusy, matchActs, render, persist, place, setBusy(wk, events) { state.local.busy[wk] = {at: Date.now(), events}; saveLocal(); onBusy(wk); }, setActs(list) { state.local.acts = {at: Date.now(), list, linked: true}; saveLocal(); for (const wk of Object.keys(state.weeks)) { const week = state.weeks[wk], before = snapshot(week), lines = matchActs(wk, week); if (lines.length) commit(wk, week, before, 'Garmin', lines); } render(); }};
+window.trainDebug = {get state() { return state; }, get cloud() { return cloud; }, push, briefs, thrEstimates, thrNews, synced, openChat, chatContext, openWizard, openOnboarding, onb, onbGo, hrTargets, hrText, wiz, rulesPlan, projectOutlook, outlookWeek, buildPlan, applyWeekPlan, makeWeekly, maybeWeekly, weeklyDue, planContext, proposalSheet, view, run, parse, onBusy, matchActs, render, persist, place, setBusy(wk, events) { state.local.busy[wk] = {at: Date.now(), events}; saveLocal(); onBusy(wk); }, setActs(list) { state.local.acts = {at: Date.now(), list, linked: true}; saveLocal(); for (const wk of Object.keys(state.weeks)) { const week = state.weeks[wk], before = snapshot(week), lines = matchActs(wk, week); if (lines.length) commit(wk, week, before, 'Garmin', lines); } render(); }};
 
 // Back from Google's consent screen: #google=ok or #google=<reason>.
 const googleBack = (location.hash.match(/google=([\w-]+)/) || [])[1];

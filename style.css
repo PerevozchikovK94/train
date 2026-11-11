@@ -539,3 +539,6 @@ button.pg-week{width:100%;text-align:left;background:none;padding:2px 0;cursor:p
 .hrz-track i.int{background:var(--accent)}
 .hrz-dot{position:absolute;top:50%;width:12px;height:12px;margin:-6px 0 0 -6px;border-radius:50%;background:var(--ink);box-shadow:0 0 0 2px var(--bg)}
 .hrz-val{text-align:right;color:var(--ink);font-weight:600;font-size:13px}
+.thr-row{align-items:flex-start}
+.thr-row .t span{white-space:normal;overflow:visible}
+.thr-row .nav-btn{margin-top:2px}
