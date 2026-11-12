@@ -548,3 +548,9 @@ button.pg-week{width:100%;text-align:left;background:none;padding:2px 0;cursor:p
 .warn-text{color:var(--warn)}
 .sheet-acts{display:flex;gap:4px;align-items:center;flex-shrink:0}
 .contrib-c{font-weight:500;margin:0 0 6px}
+.wk-plan{margin:14px 0 6px;border-radius:16px;background:var(--fill);padding:0 16px}
+.wk-plan>summary{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:60px;cursor:pointer;list-style:none}
+.wk-plan>summary::-webkit-details-marker{display:none}
+.wk-plan-t{display:flex;flex-direction:column;gap:2px}.wk-plan-t .muted{font-size:14px;font-variant-numeric:tabular-nums}
+.wk-plan .log-chev{color:var(--muted);transition:transform .2s}.wk-plan[open] .log-chev{transform:rotate(180deg)}
+.wk-plan[open]{padding-bottom:12px}

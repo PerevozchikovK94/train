@@ -2293,7 +2293,6 @@ function zonesHTML() {
     <div class="wiz-row four">${[0, 1, 2, 3].map(i => `<label class="field">Z${i + 1} ${L('до', 'to')}<input data-hrz="${i}" type="number" inputmode="numeric" min="60" max="230" value="${b[i] || ''}" placeholder="${[115, 134, 153, 172][i]}"></label>`).join('')}</div></details>`;
   return h;
 }
-function thrNudgeHTML() { return ''; }
 
 /* ---------- week review ---------- */
 // What happened in a week, without blame (rules 97–99): sessions against plan, time against the outlook,
@@ -2423,14 +2422,16 @@ function weekHTML() {
   const planMin = counted.reduce((a, s) => a + s.min, 0);
   const doneS = effs.filter(s => s.status === 'done'), ex = extras(wk, week).filter(a => trainingSport(a.sport));
   const doneMin = doneS.reduce((a, s) => a + (s.act?.min ?? s.min), 0) + ex.reduce((a, x) => a + x.min, 0);
+  h += heroHTML(wk, week, effs, ti);
   h += reviewCardHTML(wk, ti);
   h += pauseRpeHTML(wk, ti);
   h += alertsHTML(wk);
   h += planCardsHTML(wk);
-  h += heroHTML(wk, week, effs, ti);
   h += painLine();
   h += window.TrainFood?.weekRow(wk, week, ti) || '';
   h += cardsHTML(wk, week);
+  // The week's plan, folded: the summary line says how the week stands, the list opens on tap.
+  h += `<details class="wk-plan" ${planOpen ? 'open' : ''}><summary><span class="wk-plan-t"><b>${L('План недели', 'This week’s plan')}</b><span class="muted">${doneS.length + ex.length} ${L('из', 'of')} ${counted.length + ex.length} ${L('трен.', 'sessions')} · ${fHours(doneMin)} ${L('из', 'of')} ${fHours(planMin)}</span></span><svg class="log-chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary>`;
   h += progressHTML(wk, doneS, ex, doneMin, planMin, L(`${doneS.length + ex.length} из ${counted.length + ex.length} трен.`, `${doneS.length + ex.length} of ${counted.length + ex.length} sessions`));
   const ow = outlookWeek(wk);
   if (ow) h += `<p class="plan-phase"><b>${L(PHASE[ow.phase][0], PHASE[ow.phase][1])}</b> · ${L(`неделя ${ow.week} из ${ow.of}`, `week ${ow.week} of ${ow.of}`)} · ${L('ориентир', 'target')} ${fH(ow.hours)}</p>`;
@@ -2438,6 +2439,7 @@ function weekHTML() {
   h += weekListHTML(wk, week, effs, ti);
   const un = unplacedAll(week);
   if (un.length) h += `<div class="section-title">${L('Не влезло', 'Didn’t fit')}</div><div class="wl">` + un.map(s => `<div class="wl-row"><span class="wl-day"></span><div class="wl-items"><button class="wl-item" data-a="open" data-id="${s.id}"><span class="dot ${KINDS[s.kind].sport}"></span><span class="wl-name">${esc(kName(s.kind))}</span><span class="wl-meta num">${fDur(s.min)}</span></button><span class="wl-note">${esc(s.why)}</span></div></div>`).join('') + `</div>`;
+  h += '</details>';
   if (week.log.length) {
     h += `<details class="log" ${logOpen ? 'open' : ''}><summary><span>${L('История изменений', 'Change history')}</span><span class="log-n num">${week.log.length}</span><svg class="log-chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary><div class="list">` + week.log.slice(0, 8).map(e => `<div class="row" style="display:block"><span class="t"><b>«${esc(e.text)}»</b> <span class="muted" style="font-size:14px">${new Date(e.at).toLocaleString(lang === 'ru' ? 'ru-RU' : 'en-GB', {weekday: 'short', hour: '2-digit', minute: '2-digit'})}</span>${e.lines.map(l => `<span style="font-size:15px;color:var(--ink-2)">→ ${esc(l)}</span>`).join('')}</span></div>`).join('') + `</div></details>`;
   }
@@ -2472,7 +2474,7 @@ function heroHTML(wk, week, effs, ti) {
     ? `<button class="btn sm primary" data-a="mark" data-id="${s.id}" data-st="done">${L('Сделал', 'Done')}</button><button class="btn sm quiet" data-a="mark" data-id="${s.id}" data-st="skipped">${L('Пропустил', 'Skip')}</button><button class="btn sm quiet" data-a="open" data-id="${s.id}">${L('Перенести', 'Move')}</button>`
     : `<button class="btn sm quiet" data-a="open" data-id="${s.id}">${L('Перенести', 'Move')}</button><button class="btn sm quiet" data-a="mark" data-id="${s.id}" data-st="skipped">${L('Не смогу', 'Can’t make it')}</button>`;
   return `<section class="hero ${sp}">
-    <div class="hero-eyebrow num">${esc(dayWord(wk, s.day, ti))}${s.start != null ? ' · ' + hm(s.start) : ''}</div>
+    <div class="hero-eyebrow num">${L('Следующая тренировка', 'Next session')} · ${esc(dayWord(wk, s.day, ti))}${s.start != null ? ' · ' + hm(s.start) : ''}</div>
     <button class="hero-title" data-a="open" data-id="${s.id}">${esc(kName(s.kind))}</button>
     <div class="hero-meta">${fDur(s.min)} · ${esc(sDetail(s))}</div>
     ${s.was ? `<div class="hero-why">${L('Вместо', 'Instead of')} ${esc(kName(s.was).toLowerCase())}: ${esc(why)}</div>` : why ? `<div class="hero-why">${esc(why)}</div>` : ''}
@@ -2608,8 +2610,8 @@ function cardsHTML(wk, week) {
   return h;
 }
 const pending = {sit: null, walk: null, rest: false};
-let logOpen = false;
-document.addEventListener('toggle', ev => { if (ev.target.classList?.contains('log')) logOpen = ev.target.open; }, true);
+let logOpen = false, planOpen = false;
+document.addEventListener('toggle', ev => { if (ev.target.classList?.contains('log')) logOpen = ev.target.open; if (ev.target.classList?.contains('wk-plan')) planOpen = ev.target.open; }, true);
 
 const TL_FROM = 6 * 60, TL_TO = 23 * 60;
 const pct = m => Math.max(0, Math.min(100, (m - TL_FROM) / (TL_TO - TL_FROM) * 100));
@@ -2726,7 +2728,7 @@ function contribution(base, d, sid, an) {
   else c = L('Ключевая работа недели сделана.', 'The week’s key work is done.');
   // what it builds, for the goal
   const pur = L(PURPOSE[kind][0], PURPOSE[kind][1]);
-  if (p?.goal === 'event' && p.eventName) {
+  if (p?.goal === 'event' && p.eventName && /^\d{4}-\d{2}-\d{2}$/.test(p.eventDate || '')) {
     const left = Math.max(0, weeksFrom(wk, ymd(mondayOf(parseYmd(p.eventDate)))));
     const leg = p.sports?.includes('swim') && LEG[KINDS[kind].sport] ? ` (${L(LEG[KINDS[kind].sport][0], LEG[KINDS[kind].sport][1])})` : '';
     out.push(L(`К «${p.eventName}»${leg}: ${pur}. До старта ${left} нед.`, `Towards “${p.eventName}”${leg}: ${pur}. ${left} weeks to go.`));
