@@ -554,3 +554,4 @@ button.pg-week{width:100%;text-align:left;background:none;padding:2px 0;cursor:p
 .wk-plan-t{display:flex;flex-direction:column;gap:2px}.wk-plan-t .muted{font-size:14px;font-variant-numeric:tabular-nums}
 .wk-plan .log-chev{color:var(--muted);transition:transform .2s}.wk-plan[open] .log-chev{transform:rotate(180deg)}
 .wk-plan[open]{padding-bottom:12px}
+.nw-row{display:grid;grid-template-columns:32px 1fr auto;gap:10px;align-items:center;text-align:left}.nw-d{font-size:14px;color:var(--muted)}

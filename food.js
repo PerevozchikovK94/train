@@ -121,12 +121,15 @@
     if (!on()) return '';
     return `<div class="tabs3" role="tablist">${[['week', L('Неделя', 'Week')], ['food', L('Еда', 'Food')], ['stats', L('Анализ', 'Insights')]].map(([v, n]) => `<button role="tab" data-a="food-tab" data-v="${v}" aria-selected="${cur === v}">${n}</button>`).join('')}</div>`;
   }
+  // On the Week tab: two lines — calories and protein against the day's target; a tap opens Food.
   function weekRow(wk, week, ti) {
     if (!on() || ti < 0 || ti > 6) return '';
     const T = targets(sessionsOn(todayStr())), E = eaten(F.log[todayStr()] || {});
-    const txt = T ? L(`${fmt(E.kcal)} из ${fmt(T.kcal)} ккал · белок ${fmt(E.p)} из ${T.p} г`, `${fmt(E.kcal)} of ${fmt(T.kcal)} kcal · protein ${fmt(E.p)} of ${T.p} g`) : L('Впиши вес — покажу норму на день', 'Add your weight for the day’s targets');
-    return `<button class="nudge food-row" data-a="food-tab" data-v="food">${T ? arc(E.kcal, T.kcal, 34) : ''}<span>${L('Еда сегодня', 'Food today')} · ${txt}</span><span class="nudge-go">›</span></button>`;
+    if (!T) return `<button class="nudge food-row" data-a="food-tab" data-v="food"><span>${L('Еда сегодня · впиши вес — покажу норму на день', 'Food today · add your weight for the day’s targets')}</span><span class="nudge-go">›</span></button>`;
+    const line = (n, e, t, u, hue) => `<span class="wr-l"><span class="wr-n">${n}</span><span class="mrow-b" style="--h:${hue}"><i style="width:${Math.min(100, e / t * 100).toFixed(1)}%" class="${e > t * 1.1 ? 'over' : ''}"></i></span><span class="wr-v"><b>${fmt(e)}</b><span class="muted"> / ${fmt(t)}${u}</span></span></span>`;
+    return `<button class="card food-wr" data-a="food-tab" data-v="food"><span class="wr-h"><b>${L('Еда сегодня', 'Food today')}</b><span class="nudge-go">›</span></span>${line(L('Калории', 'Calories'), E.kcal, T.kcal, '', 'var(--accent)')}${line(L('Белки', 'Protein'), E.p, T.p, L(' г', ' g'), 'var(--bike)')}</button>`;
   }
+
   const head = (cur, title, sub) => `<header class="nav"><div class="nav-row"><span></span><span class="nav-right"><button class="nav-btn icon-btn" data-a="settings" aria-label="${L('Настройки', 'Settings')}">${icon('gear', 22)}</button></span></div>${tabs(cur)}<h1>${title}<span class="sub">${esc(sub)}</span></h1></header>`;
   function screen(v) {
     if (!on()) { TrainApp.view.v = 'week'; return ''; }
@@ -351,6 +354,7 @@
 .cmp{background:var(--bg);border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:2px;font-size:12px}
 .cmp b{font-size:22px}
 .food-fab.low{bottom:calc(20px + env(safe-area-inset-bottom,0px))}
+.food-wr{display:flex;flex-direction:column;gap:10px;width:100%;text-align:left;padding:14px 16px}.wr-h{display:flex;justify-content:space-between;align-items:center}.wr-l{display:grid;grid-template-columns:76px 1fr 112px;gap:10px;align-items:center;font-size:14px}.wr-v{text-align:right;font-variant-numeric:tabular-nums}.wr-v .muted{font-size:12px}
 .food-row{gap:10px}
 .food-row>span:nth-child(2){flex:1}
 .fuel-l{display:grid;grid-template-columns:84px 1fr;gap:8px;padding:6px 0;border-top:1px solid var(--line);font-size:14px}

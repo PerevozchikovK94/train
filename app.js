@@ -2431,8 +2431,6 @@ function weekHTML() {
   h += painLine();
   h += window.TrainFood?.weekRow(wk, week, ti) || '';
   h += cardsHTML(wk, week);
-  // The week's plan, folded: the summary line says how the week stands, the list opens on tap.
-  h += `<details class="wk-plan" ${planOpen ? 'open' : ''}><summary><span class="wk-plan-t"><b>${L('План недели', 'This week’s plan')}</b><span class="muted">${doneS.length + ex.length} ${L('из', 'of')} ${counted.length + ex.length} ${L('трен.', 'sessions')} · ${fHours(doneMin)} ${L('из', 'of')} ${fHours(planMin)}</span></span><svg class="log-chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary>`;
   h += progressHTML(wk, doneS, ex, doneMin, planMin, L(`${doneS.length + ex.length} из ${counted.length + ex.length} трен.`, `${doneS.length + ex.length} of ${counted.length + ex.length} sessions`));
   const ow = outlookWeek(wk);
   if (ow) h += `<p class="plan-phase"><b>${L(PHASE[ow.phase][0], PHASE[ow.phase][1])}</b> · ${L(`неделя ${ow.week} из ${ow.of}`, `week ${ow.week} of ${ow.of}`)} · ${L('ориентир', 'target')} ${fH(ow.hours)}</p>`;
@@ -2440,13 +2438,26 @@ function weekHTML() {
   h += weekListHTML(wk, week, effs, ti);
   const un = unplacedAll(week);
   if (un.length) h += `<div class="section-title">${L('Не влезло', 'Didn’t fit')}</div><div class="wl">` + un.map(s => `<div class="wl-row"><span class="wl-day"></span><div class="wl-items"><button class="wl-item" data-a="open" data-id="${s.id}"><span class="dot ${KINDS[s.kind].sport}"></span><span class="wl-name">${esc(kName(s.kind))}</span><span class="wl-meta num">${fDur(s.min)}</span></button><span class="wl-note">${esc(s.why)}</span></div></div>`).join('') + `</div>`;
-  h += '</details>';
+  if (ti >= 0 && ti <= 6) h += nextWeekHTML(wk);
   if (week.log.length) {
     h += `<details class="log" ${logOpen ? 'open' : ''}><summary><span>${L('История изменений', 'Change history')}</span><span class="log-n num">${week.log.length}</span><svg class="log-chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary><div class="list">` + week.log.slice(0, 8).map(e => `<div class="row" style="display:block"><span class="t"><b>«${esc(e.text)}»</b> <span class="muted" style="font-size:14px">${new Date(e.at).toLocaleString(lang === 'ru' ? 'ru-RU' : 'en-GB', {weekday: 'short', hour: '2-digit', minute: '2-digit'})}</span>${e.lines.map(l => `<span style="font-size:15px;color:var(--ink-2)">→ ${esc(l)}</span>`).join('')}</span></div>`).join('') + `</div></details>`;
   }
   return h + '</main>';
 }
 
+// Next week, folded under this one: the built week if there is one, else the assistant's proposal, else the usual week.
+// Read-only here; a tap on a row opens that week.
+function nextWeekHTML(wk) {
+  const nwk = ymd(addDays(parseYmd(wk), 7)), built = state.weeks[nwk], prop = state.proposals[nwk];
+  const src = built ? built.sessions.filter(s => s.status !== 'dropped' && s.day != null) : prop?.status === 'new' && prop.sessions?.length ? prop.sessions : templateFor();
+  const by = built ? '' : prop?.status === 'new' ? L(' · предложение ассистента', ' · assistant’s proposal') : L(' · по обычной неделе', ' · from your usual week');
+  const ss = src.filter(s => s.day != null && KINDS[s.kind]).slice().sort((a, b) => a.day - b.day || (a.start ?? 0) - (b.start ?? 0));
+  if (!ss.length) return '';
+  const D = DAYS(), min = ss.reduce((t, s) => t + (s.min || 0), 0);
+  return `<details class="wk-plan" ${planOpen ? 'open' : ''}><summary><span class="wk-plan-t"><b>${L('План следующей недели', 'Next week’s plan')}</b><span class="muted">${ss.length} ${L('трен.', 'sessions')} · ${fHours(min)}${by}</span></span><svg class="log-chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary>
+    <div class="list">${ss.map(s => `<button class="row nw-row" data-a="wk" data-d="7"><span class="nw-d">${D[s.day]}</span><span class="t"><b><span class="dot ${KINDS[s.kind].sport}"></span> ${esc(kName(s.kind))}</b>${s.detail ? `<span>${esc(hrText(s.detail))}</span>` : ''}</span><span class="v num">${fDur(s.min)}${s.start != null ? `<span>${hm(s.start)}</span>` : ''}</span></button>`).join('')}</div>
+    ${prop?.status === 'new' && !built ? `<button class="btn quiet" data-a="prop-open" data-wk="${nwk}" style="margin-top:10px">${L('Посмотреть предложение', 'Review the proposal')}</button>` : ''}</details>`;
+}
 // The one thing to do next: today's session, or the next one ahead. Its day's calendar is drawn here and only here.
 function nextUp(effs, ti) {
   const from = Math.max(ti, 0);
