@@ -48,7 +48,7 @@
   });
   async function estimate(body) {
     if (busy.on || !cloud.client || !cloud.user) return;
-    busy.on = true; render();
+    busy.on = true; fabOpen = false; fabRender(); render();
     try {
       const {data, error} = await cloud.client.functions.invoke('train-food', {body});
       let err = null; if (error) { try { err = (await error.context?.json?.())?.error; } catch {} err = err || 'unavailable'; }
@@ -57,7 +57,7 @@
       day(todayStr()).m.push({at: Date.now(), name: data.items.map(x => x.name).join(', ').slice(0, 80), items: data.items, ...data.total, note: data.comment, conf: data.confidence, src: body.image ? 'photo' : 'text'});
       save();
       toast(L(`+${data.total.kcal} ккал · Б ${data.total.p} · Ж ${data.total.f} · У ${data.total.c}`, `+${data.total.kcal} kcal · P ${data.total.p} · F ${data.total.f} · C ${data.total.c}`));
-    } finally { busy.on = false; render(); }
+    } finally { busy.on = false; fabRender(); render(); }
   }
   function save() {
     F.at = Date.now();
@@ -105,17 +105,20 @@
     const prot = E.p, tgt = F.weight ? [Math.round(F.weight * 1.6), Math.round(F.weight * 2)] : null;
     let h = `<section class="card food-card"><div class="food-h"><b>${L('Питание сегодня', 'Food today')}</b>${supps.length ? `<span class="muted num">${L('добавки', 'supps')} ${supps.filter(x => d.s[x.id]).length}/${supps.length}</span>` : ''}</div>`;
     if (T) {
-      const row = (n, e, t, u) => `<div class="kbju-row"><span>${n}</span><span class="kbju-bar"><i style="width:${Math.min(100, Math.round(e / t * 100))}%" class="${e > t * 1.1 ? 'over' : ''}"></i></span><span class="num">${Math.round(e)}<span class="muted"> / ${t}${u}</span></span></div>`;
-      h += `<div class="kbju">${row(L('Ккал', 'kcal'), E.kcal, T.kcal, '')}${row(L('Белки', 'Protein'), E.p, T.p, L(' г', ' g'))}${row(L('Жиры', 'Fat'), E.f, T.f, L(' г', ' g'))}${row(L('Углеводы', 'Carbs'), E.c, T.c, L(' г', ' g'))}</div>
+      // A ring for calories, three filling bars for protein, fat and carbs; over the plan by 10% turns amber.
+      const left = T.kcal - Math.round(E.kcal), pc = Math.min(1, E.kcal / T.kcal), R = 44, C = 2 * Math.PI * R;
+      const ring = `<div class="kbju-ring" role="img" aria-label="${L(`Калории: ${Math.round(E.kcal)} из ${T.kcal}`, `Calories: ${Math.round(E.kcal)} of ${T.kcal}`)}"><svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="${R}" class="ring-bg"/><circle cx="50" cy="50" r="${R}" class="ring-fg${E.kcal > T.kcal * 1.1 ? ' over' : ''}" stroke-dasharray="${(pc * C).toFixed(1)} ${C.toFixed(1)}" transform="rotate(-90 50 50)"/></svg>
+        <div class="ring-c"><b class="num">${Math.round(E.kcal)}</b><span class="muted num">/ ${T.kcal} ${L('ккал', 'kcal')}</span><span class="muted">${left >= 0 ? L(`ещё ${left}`, `${left} left`) : L(`+${-left} сверх`, `${-left} over`)}</span></div></div>`;
+      const bar = (n, e, t, cls) => `<div class="mac"><div class="mac-h"><span>${n}</span><span class="num"><b>${Math.round(e)}</b><span class="muted"> / ${t} ${L('г', 'g')}</span></span></div><div class="mac-bar ${cls}"><i style="width:${Math.min(100, Math.round(e / t * 100))}%" class="${e > t * 1.1 ? 'over' : ''}"></i></div></div>`;
+      h += `<div class="kbju2">${ring}<div class="macs">${bar(L('Белки', 'Protein'), E.p, T.p, 'p')}${bar(L('Жиры', 'Fat'), E.f, T.f, 'f')}${bar(L('Углеводы', 'Carbs'), E.c, T.c, 'c')}</div></div>
         <p class="hint kbju-why">${T.min ? L(`План на день с тренировкой ${fDur(T.min)} (~${T.burn} ккал на ней): углеводы ${T.ck} г/кг, белок 1,8 г/кг, жиры 1 г/кг.`, `Today’s plan with ${fDur(T.min)} of training (~${T.burn} kcal): carbs ${T.ck} g/kg, protein 1.8 g/kg, fat 1 g/kg.`) : L('День отдыха: углеводы 3,5 г/кг, белок 1,8 г/кг, жиры 1 г/кг.', 'Rest day: carbs 3.5 g/kg, protein 1.8 g/kg, fat 1 g/kg.')} ${L('Это поддержание веса, не дефицит.', 'This is maintenance, not a deficit.')}</p>`;
     }
-    h += `<div class="food-log"><label class="btn quiet food-photo">${busy.on ? L('Считаю…', 'Estimating…') : L('Сфоткать еду', 'Snap a meal')}<input type="file" accept="image/*" capture="environment" data-food="photo" hidden ${busy.on ? 'disabled' : ''}></label>
-      <form id="foodText" class="food-text"><input id="foodTextIn" placeholder="${L('или опиши: творог 200 г и банан', 'or describe: 200 g cottage cheese and a banana')}" maxlength="300" ${busy.on ? 'disabled' : ''}><button class="btn quiet" type="submit" ${busy.on ? 'disabled' : ''}>OK</button></form></div>`;
+    if (!(d.m || []).length) h += `<p class="hint" style="margin:0 0 8px">${L('Еду добавляй кнопкой «+ Еда» внизу справа — фото или текстом.', 'Log meals with «+ Meal» at the bottom right — a photo or a line of text.')}</p>`;
     if ((d.m || []).length) h += `<ul class="food-meals">${d.m.map((m, i) => `<li><span><b>${esc(m.name)}</b><span class="muted num"> · ${m.kcal} ${L('ккал', 'kcal')} · Б${m.p} Ж${m.f} У${m.c}${m.conf === 'low' ? L(' · грубо', ' · rough') : ''}</span>${m.note ? `<span class="muted food-note">${esc(m.note)}</span>` : ''}</span><button class="nav-btn" data-a="food-m-del" data-i="${i}" aria-label="${L('Удалить', 'Delete')}">✕</button></li>`).join('')}</ul>`;
     if (fuel) h += `<div class="food-fuel"><span class="muted">${esc(fuel.head)}</span>${fuel.lines.map(l => `<p>${esc(l)}</p>`).join('')}</div>`;
     h += `<div class="food-prot"><span>${T ? L('Быстро добавить белок', 'Quick add protein') : `${L('Белок', 'Protein')} <b class="num">${prot} ${L('г', 'g')}</b>${tgt ? `<span class="muted num"> / ${tgt[0]}–${tgt[1]}</span>` : ''}`}</span><span class="food-add">${[20, 30, 40].map(g => `<button class="chip" data-a="food-p" data-g="${g}">+${g}</button>`).join('')}${d.p.length ? `<button class="chip" data-a="food-p-undo" aria-label="${L('Отменить последнее', 'Undo last')}">↶</button>` : ''}</span></div>`;
+    if (!F.weight) h += `<label class="field food-w">${L('Вес, кг — и покажу норму калорий и БЖУ на день', 'Weight, kg — for the day’s calorie and macro targets')}<input data-food="weight" type="number" inputmode="decimal" min="35" max="200" step="0.5" placeholder="75"></label>`;
     if (T) {} else if (tgt) h += `<div class="food-bar"><i style="width:${Math.min(100, Math.round(prot / tgt[0] * 100))}%"></i></div>`;
-    else h += `<p class="hint" style="margin:4px 0 0">${L('Впиши вес в настройках — покажу цель по белку (1,6–2 г/кг).', 'Add your weight in settings for a protein target (1.6–2 g/kg).')}</p>`;
     if (supps.length) h += `<div class="chips-row wrap">${supps.map(x => `<button class="chip" data-a="food-s" data-id="${esc(x.id)}" aria-pressed="${!!d.s[x.id]}">${d.s[x.id] ? '✓ ' : ''}${esc(x.name)}${x.dose ? ` · ${esc(x.dose)}` : ''}</button>`).join('')}</div>`;
     return h + '</section>';
   }
@@ -139,6 +142,7 @@
     if (a === 'food-p') { day(todayStr()).p.push(+el.dataset.g); save(); return true; }
     if (a === 'food-p-undo') { day(todayStr()).p.pop(); save(); return true; }
     if (a === 'food-s') { const d = day(todayStr()), id = el.dataset.id; if (d.s[id]) delete d.s[id]; else d.s[id] = true; save(); return true; }
+    if (a === 'food-fab') { fabOpen = !fabOpen; fabRender(); if (fabOpen) setTimeout(() => $('#foodTextIn')?.focus(), 50); return true; }
     if (a === 'food-m-del') { day(todayStr()).m.splice(+el.dataset.i, 1); save(); return true; }
     if (a === 'food-s-del') { F.supps.splice(+el.dataset.i, 1); save(); return true; }
     return false;
@@ -149,7 +153,7 @@
     const v = Math.round(+String(el.value).replace(',', '.') * 2) / 2; F.weight = v >= 35 && v <= 200 ? v : null; save(); return true;
   }
   document.addEventListener('submit', ev => {
-    if (ev.target.id === 'foodText') { ev.preventDefault(); const t = ($('#foodTextIn').value || '').trim(); if (t) estimate({text: t}); return; }
+    if (ev.target.id === 'foodText') { ev.preventDefault(); const t = (ev.target.querySelector('input')?.value || '').trim(); if (t) estimate({text: t}); return; }
     if (ev.target.id !== 'suppForm') return;
     ev.preventDefault();
     const name = ($('#suppName').value || '').trim(); if (!name) return;
@@ -163,6 +167,17 @@
 .food-add{display:flex;gap:6px}.food-add .chip{min-height:34px;padding:6px 12px;background:var(--bg)}
 .food-bar{height:6px;border-radius:3px;background:var(--bg);margin:8px 0 4px;overflow:hidden}.food-bar i{display:block;height:100%;background:var(--accent);border-radius:3px}
 .food-card .chips-row{padding-bottom:0}
+.food-fab{position:fixed;right:max(16px,env(safe-area-inset-right,0px));bottom:calc(var(--tab, 64px) + 16px + env(safe-area-inset-bottom,0px));z-index:6;display:flex;flex-direction:column;align-items:flex-end;gap:8px}
+.food-fab-btn{min-height:52px;min-width:52px;padding:0 18px;border-radius:26px;background:var(--accent);color:var(--bg);font-weight:600;font-size:16px;box-shadow:0 6px 20px rgba(0,0,0,.25)}
+.food-fab-panel{background:var(--bg);border:1px solid var(--line);border-radius:16px;padding:12px;display:flex;flex-direction:column;gap:8px;width:min(320px,calc(100vw - 32px));box-shadow:0 10px 30px rgba(0,0,0,.3)}
+.kbju2{display:grid;grid-template-columns:118px 1fr;gap:14px;align-items:center;margin:6px 0 8px}
+.kbju-ring{position:relative;width:118px;height:118px}.kbju-ring svg{width:100%;height:100%}
+.ring-bg{fill:none;stroke:var(--bg);stroke-width:10}.ring-fg{fill:none;stroke:var(--accent);stroke-width:10;stroke-linecap:round;transition:stroke-dasharray .4s}.ring-fg.over{stroke:var(--warn)}
+.ring-c{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;line-height:1.15;font-size:12px}.ring-c b{font-size:22px}
+.macs{display:flex;flex-direction:column;gap:10px}.mac-h{display:flex;justify-content:space-between;font-size:14px;margin-bottom:4px}
+.mac-bar{height:8px;border-radius:4px;background:var(--bg);overflow:hidden}.mac-bar i{display:block;height:100%;border-radius:4px;transition:width .4s}
+.mac-bar.p i{background:var(--bike)}.mac-bar.f i{background:var(--run)}.mac-bar.c i{background:var(--climb)}.mac-bar i.over{background:var(--warn)}
+.food-w{margin:4px 0 10px}
 .kbju{display:flex;flex-direction:column;gap:6px;margin:4px 0 6px}.kbju-row{display:grid;grid-template-columns:80px 1fr 96px;gap:8px;align-items:center;font-size:14px}
 .kbju-row>span:last-child{text-align:right}.kbju-bar{height:6px;border-radius:3px;background:var(--bg);overflow:hidden}.kbju-bar i{display:block;height:100%;background:var(--accent);border-radius:3px}.kbju-bar i.over{background:var(--warn)}
 .kbju-why{margin:2px 0 10px}.food-log{display:flex;flex-direction:column;gap:8px;margin:6px 0 8px}.food-photo{position:relative}
@@ -170,6 +185,19 @@
 .food-meals{list-style:none;padding:0;margin:4px 0 10px;font-size:14px}.food-meals li{display:flex;justify-content:space-between;gap:8px;padding:6px 0;border-bottom:1px solid var(--line)}
 .food-meals li>span{display:flex;flex-direction:column}.food-note{font-size:13px}.food-card .chip{background:var(--bg)}.food-card .chip[aria-pressed="true"]{background:var(--ink);color:var(--bg)}`;
   document.head.appendChild(css);
-  window.TrainFood = {card, settings, briefLine, click, change, get data() { return F; }};
+  // A floating «Log a meal» button, bottom right above the command bar: camera, or a line of text.
+  const fab = document.createElement('div');
+  fab.className = 'food-fab'; fab.hidden = true;
+  document.body.appendChild(fab);
+  let fabOpen = false;
+  function fabRender() {
+    fab.hidden = !on() || !!document.querySelector('.settings');
+    fab.innerHTML = fabOpen ? `<div class="food-fab-panel"><label class="btn primary">${L('Сфоткать', 'Take a photo')}<input type="file" accept="image/*" capture="environment" data-food="photo" hidden></label>
+      <form id="foodText" class="food-text"><input id="foodTextIn" placeholder="${L('или опиши: творог 200 г', 'or describe: 200 g cottage cheese')}" maxlength="300"><button class="btn quiet" type="submit">OK</button></form></div>
+      <button class="food-fab-btn" data-a="food-fab" aria-label="${L('Закрыть', 'Close')}">✕</button>`
+      : `<button class="food-fab-btn" data-a="food-fab">${busy.on ? L('Считаю…', 'Estimating…') : L('+ Еда', '+ Meal')}</button>`;
+  }
+  setInterval(() => { const want = on() && !document.querySelector('.settings'); if (fab.hidden === want) fabRender(); }, 700);
+  window.TrainFood = {card, settings, briefLine, click, change, fabRender, get data() { return F; }};
   render();
 })();
