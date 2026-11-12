@@ -2386,7 +2386,7 @@ function toast(msg) { const el = $('#toast'); el.textContent = msg; el.hidden = 
 
 function render() {
   const app = $('#app');
-  app.innerHTML = view.v === 'settings' ? settingsHTML() : view.v === 'program' ? programHTML() : weekHTML();
+  app.innerHTML = (view.v === 'food' || view.v === 'stats') && window.TrainFood ? window.TrainFood.screen(view.v) : view.v === 'settings' ? settingsHTML() : view.v === 'program' ? programHTML() : weekHTML();
   $('#cmd').hidden = view.v !== 'week';
   $('#cmdInput').placeholder = cloud.ai ? L('Что поменялось — или спроси', 'What changed — or ask') : L('Что поменялось? «перенеси бег на чт»', 'What changed? “move run to Thu”');
   renderChips();
@@ -2403,7 +2403,7 @@ function weekHTML() {
   let h = `<main class="screen"><header class="nav"><div class="nav-row">
     <span class="weeknav"><button class="nav-btn icon-btn" data-a="wk" data-d="-7" aria-label="${L('Прошлая неделя', 'Previous week')}">${icon('left')}</button><button class="nav-btn icon-btn" data-a="wk" data-d="7" aria-label="${L('Следующая неделя', 'Next week')}">${icon('right')}</button>${ti < 0 || ti > 6 ? `<button class="nav-btn link" data-a="wk-today">${L('Сегодня', 'Today')}</button>` : ''}</span>
     <span class="nav-right">${cloud.ai ? `<button class="nav-btn icon-btn" data-a="chat" aria-label="${L('Ассистент', 'Assistant')}">${icon('chat', 22)}</button>` : ''}<button class="nav-btn" data-a="program">${L('Программа', 'Program')}</button><button class="nav-btn icon-btn" data-a="settings" aria-label="${L('Настройки', 'Settings')}">${icon('gear', 22)}</button></span></div>
-    <h1>${L('Неделя', 'Week')}<span class="sub">${esc(sub)}</span></h1></header>`;
+    ${window.TrainFood?.tabs('week') || ''}<h1>${L('Неделя', 'Week')}<span class="sub">${esc(sub)}</span></h1></header>`;
   if (lastChange && lastChange.wk === wk) {
     h += `<section class="card change"><div class="card-head"><h3>${lastChange.info ? L('Ответ', 'Reply') : L('Что поменялось', 'What changed')}</h3>${!lastChange.info ? `<button class="nav-btn link" data-a="undo">${L('Отменить', 'Undo')}</button>` : `<button class="nav-btn link" data-a="dismiss">${L('Ок', 'OK')}</button>`}</div>
       ${lastChange.text ? `<p class="muted" style="font-size:13px">«${esc(lastChange.text)}»</p>` : ''}<ul>${lastChange.lines.map(l => `<li>${esc(l)}</li>`).join('')}</ul></section>`;
@@ -2429,7 +2429,7 @@ function weekHTML() {
   h += planCardsHTML(wk);
   h += heroHTML(wk, week, effs, ti);
   h += painLine();
-  h += window.TrainFood?.card(wk, week, ti) || '';
+  h += window.TrainFood?.weekRow(wk, week, ti) || '';
   h += cardsHTML(wk, week);
   h += progressHTML(wk, doneS, ex, doneMin, planMin, L(`${doneS.length + ex.length} из ${counted.length + ex.length} трен.`, `${doneS.length + ex.length} of ${counted.length + ex.length} sessions`));
   const ow = outlookWeek(wk);
@@ -3451,7 +3451,7 @@ document.addEventListener('pointerdown', ev => { if (ev.target.closest('.chip'))
 
 // Debug hook for local testing (busy/acts injection); harmless in production.
 // What add-ons (food.js) may use; nothing else in the app depends on them.
-window.TrainApp = {L, esc, kName, KINDS, fDur, effective, todayStr, DAYS, render, $, cloud, toast};
+window.TrainApp = {L, esc, kName, KINDS, fDur, fHours, effective, todayStr, DAYS, render, $, cloud, toast, icon, view, ymd, parseYmd, mondayOf, addDays, SPORTS, trainingSport, actSport, lang: () => lang, get state() { return state; }};
 window.trainDebug = {get state() { return state; }, get cloud() { return cloud; }, push, briefs, contribution, hrAuto, thrAuto, ftpAuto, effThr, effFtp, hrWords, trainStatus, breakOf, synced, openChat, chatContext, openWizard, openOnboarding, onb, onbGo, hrTargets, hrText, wiz, rulesPlan, projectOutlook, outlookWeek, buildPlan, applyWeekPlan, makeWeekly, maybeWeekly, weeklyDue, planContext, proposalSheet, view, run, parse, onBusy, matchActs, render, persist, place, setBusy(wk, events) { state.local.busy[wk] = {at: Date.now(), events}; saveLocal(); onBusy(wk); }, setActs(list) { state.local.acts = {at: Date.now(), list, linked: true}; saveLocal(); for (const wk of Object.keys(state.weeks)) { const week = state.weeks[wk], before = snapshot(week), lines = matchActs(wk, week); if (lines.length) commit(wk, week, before, 'Garmin', lines); } render(); }};
 
 // Back from Google's consent screen: #google=ok or #google=<reason>.
