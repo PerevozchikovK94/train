@@ -105,6 +105,7 @@ function load() {
 function fill(d) {
   if (!d.health) d.health = Object.keys(d.checks || {}).length ? {track: true, note: '', rule: 'бег только после 48 ч на 0/10, включая сидение; вел — если сидя 0/10'} : {track: false};
   if (!d.onboard && (Object.keys(d.weeks || {}).length || d.plan)) d.onboard = {done: true, at: null};
+  if (d.zones && !d.zones.v2) { const hr = {...(d.zones.hr || {})}; delete hr.easy; d.zones = {...d.zones, hr, v2: true, mode: 'auto'}; delete d.zones.seen; }
   return d;
 }
 const synced = () => { const {local, dirty, syncedAt, syncedUser, brief, ...rest} = state; return {...rest, brief: briefs()}; };
@@ -1014,7 +1015,7 @@ function garminCtx() {
   }
   return {linked: !!state.local.acts?.linked, recent_21d: recent, hours_by_week: weeks};
 }
-const zonesCtx = () => { const z = state.zones || {}, ep = typeof easyPace === 'function' ? easyPace() : null; return {ftp_w: z.ftp || null, run_threshold_pace: z.thr || null, heart_rate: typeof hrTargets === 'function' && hrTargets() ? (t => ({watch_zones_top: {Z1: t.b[0], Z2: t.b[1], Z3: t.b[2], Z4: t.b[3]}, easy_max: t.easyMax, tempo: t.tempo, threshold: t.hard, intervals_from: t.intervals, usual_easy_run_hr: t.usual}))(hrTargets()) : null, usual_run_pace_garmin: ep ? paceFmt(ep) : null, note: 'в detail пиши пульс в ударах из heart_rate (например «пульс до 153»), а не названия зон Z1–Z5: зоны на часах у человека свои; если heart_rate нет — RPE и разговорный тест'}; };
+const zonesCtx = () => { const z = state.zones || {}, ep = typeof easyPace === 'function' ? easyPace() : null; const thr = effThr(); return {mode: zMode(), ftp_w: effFtp(), run_threshold_pace: thr ? paceFmt(thr) : null, heart_rate: hrTargets() ? (t => ({watch_zones_top: {Z1: t.b[0], Z2: t.b[1], Z3: t.b[2], Z4: t.b[3]}, easy_max: t.lt1, steady_max: t.steady, tempo: t.tempo, threshold: t.thr, hard_from: t.intervals, max_hr_est: t.max, usual_easy_run_hr: t.usual}))(hrTargets()) : null, usual_run_pace_garmin: ep ? paceFmt(ep) : null, note: 'в detail пиши пульс в ударах из heart_rate словами «Лёгкий/Ровный/Темп/Порог/Тяжёлый» (например «Лёгкий, пульс до 147»), а не названия зон Z1–Z5: зоны на часах у человека свои; если heart_rate нет — RPE и разговорный тест'}; };
 const templateCtx = () => state.template.map(t => ({day: DAYS_RU[t.day], kind: KINDS[t.kind].ru, min: t.min, tod: t.tod, anchor: t.anchor, ...(t.detail ? {detail: t.detail} : {})}));
 function chatContext(focus) {
   const wk = view.wk, week = state.weeks[wk], ti = todayIdx(wk), now = new Date(), cur = ymd(mondayOf(now)), nwk = ymd(addDays(mondayOf(now), 7));
@@ -1962,35 +1963,156 @@ function programHTML() {
 }
 
 /* ---------- session guide: how to do it, in your numbers, and what the rulebook says is critical ---------- */
-/* ---------- heart rate: the watch's zones, and targets in beats per minute ---------- */
-// state.zones.hr = {b: [Z1 top, Z2 top, Z3 top, Z4 top], easy: 2|3}. The bounds are copied from the watch (Garmin's
-// Personal API doesn't expose them), so the app, the plan and the watch speak the same numbers. «Easy» is the zone
-// the person's easy runs live in: Z2 when the watch zones are threshold-based, often Z3 when they're % of max HR.
+/* ---------- zones and thresholds: computed from training, or the person's own ---------- */
+// Research basis: reports/Умное определение зон и порогов.md. Heart rate leads; pace and watts follow when precise enough.
+// The watch's zone bounds (state.zones.hr.b, copied from Garmin) stay as they are; on top of them the app puts five words —
+// Лёгкий / Ровный / Темп / Порог / Тяжёлый — cut from two anchors in bpm: LT1 (top of easy) and LT2 (threshold).
+// state.zones.mode: 'auto' (default) — everything from the algorithm; 'own' — the person's numbers, blanks from the algorithm.
 const hrZonesOk = b => Array.isArray(b) && b.length === 4 && b.every((x, i) => x > 60 && x < 230 && (i === 0 || x > b[i - 1]));
-// The usual easy-run HR: the median average HR of runs of 20+ min in the last 8 weeks.
-function usualRunHr() {
-  const xs = runsSince(56).filter(a => a.min >= 20 && a.hr).map(a => a.hr).sort((a, b) => a - b);
-  return xs.length >= 3 ? xs[Math.floor(xs.length / 2)] : null;
+const VT1_K = {low: 0.746, med: 0.786, high: 0.808}; // %HRmax at VT1 by training status, men 30–45 (B, Benítez-Muñoz 2025)
+const VT2_K = 0.91;                                   // %HRmax at VT2, lower end of 90.6–94.6% (B/C)
+const T1_CS = 0.823;                                  // LT1 = 82.3% of critical speed (A/B, Hunter 2024)
+const D_PRIME = 150;                                  // typical amateur D′, m (B/C, Smyth 2020)
+const SNAP = 3, DRIFT = 6;                            // stick to a watch bound within 3 bpm; «Ровный» = LT1 + 6 (C)
+const zMode = () => state.zones?.mode === 'own' ? 'own' : 'auto';
+const daysAgo = a => (Date.now() - parseYmd(a.start.slice(0, 10))) / 864e5;
+const actsSince = (days, f) => (state.local.acts?.list || []).filter(a => daysAgo(a) <= days && f(a));
+// Recency: full weight for 30 days, fading 2% a month to 90, then out (C: Stryd, Zwift, COROS).
+const decay = d => d <= 30 ? 1 : d <= 90 ? 1 - 0.02 * (d - 30) / 30 : 0;
+// The latest break of 2+ weeks in a sport over 4 months (an ongoing one counts): pace and watts from before it are
+// taken 1% lower per week off, at most 10% (C, heuristic). Heart-rate anchors don't move.
+function breakOf(sport) {
+  const xs = actsSince(120, a => a.sport === sport).map(a => parseYmd(a.start.slice(0, 10))).sort((a, b) => a - b);
+  if (!xs.length) return null;
+  const pts = [...xs, new Date()];
+  for (let i = pts.length - 1; i > 0; i--) {
+    const days = (pts[i] - pts[i - 1]) / 864e5;
+    if (days >= 14) { const weeks = Math.floor(days / 7); return {to: ymd(pts[i]), weeks, delta: Math.min(0.1, 0.01 * weeks)}; }
+  }
+  return null;
 }
+const adj = (a, brk) => decay(daysAgo(a)) * (brk && a.start.slice(0, 10) < brk.to ? 1 - brk.delta : 1);
+// The max HR the watch's zones are cut from, when they are the usual %max split (60/70/80/90%).
+function zonesMax(b) {
+  if (!hrZonesOk(b)) return null;
+  const M = b[3] / 0.9;
+  return [0.6, 0.7, 0.8].every((f, i) => Math.abs(b[i] - M * f) <= 2) ? Math.round(M) : null;
+}
+const pctZones = M => [0.6, 0.7, 0.8, 0.9].map(f => Math.round(M * f));
+// Training status: run + ride hours a week over 12 weeks, weeks off left out (C).
+function trainStatus() {
+  const wk = {};
+  for (const a of actsSince(84, x => x.sport === 'run' || x.sport === 'bike')) { const k = ymd(mondayOf(parseYmd(a.start.slice(0, 10)))); wk[k] = (wk[k] || 0) + a.min / 60; }
+  const hs = Object.values(wk); if (!hs.length) return {s: 'med', h: null};
+  const h = hs.reduce((a, b) => a + b, 0) / hs.length;
+  let s = h < 3 ? 'low' : h <= 6 ? 'med' : 'high';
+  const brk = breakOf('run') || breakOf('bike');
+  if (brk && brk.weeks >= 8 && (Date.now() - parseYmd(brk.to)) / 864e5 < 28) s = s === 'high' ? 'med' : 'low';
+  return {s, h};
+}
+// Heart-rate anchors from the algorithm: max HR, LT1, «Ровный» top, LT2 — snapped to the watch's bounds.
+function hrAuto() {
+  const b0 = state.zones?.hr?.b, W = zonesMax(b0);
+  const peaks = actsSince(180, a => a.hrMax && (a.sport === 'run' || a.sport === 'bike')).sort((a, b) => b.hrMax - a.hrMax);
+  let P = peaks[0] || null; if (P && peaks[1] && P.hrMax - peaks[1].hrMax > 8) P = peaks[1]; // a lone spike 9+ above the next is optical noise
+  const p = P?.hrMax || null;
+  let max, conf = 'medium', watchLow = false;
+  if (W && p && p <= W && W <= p + 10) max = Math.round((p + W) / 2);
+  else if (W && p && W < p - 2) { max = p; watchLow = true; }
+  else if (W && p && W > p + 10) { max = p + 5; conf = 'low'; }
+  else if (W) max = W;
+  else if (p) { max = p; conf = 'low'; }
+  else if (hrZonesOk(b0)) { max = Math.round(b0[3] / 0.9); conf = 'low'; }
+  else return null;
+  const st = trainStatus();
+  const b = hrZonesOk(b0) ? b0 : pctZones(max), snap = v => { const m = b.find(x => Math.abs(x - v) <= SNAP); return m ?? v; };
+  const lt1 = snap(Math.round(VT1_K[st.s] * max));
+  return {max, peak: p, peakDate: P?.start.slice(0, 10), watchMax: W, watchLow, conf, status: st, b, derived: !hrZonesOk(b0), lt1, steady: snap(lt1 + DRIFT), lt2: snap(Math.round(VT2_K * max))};
+}
+// The usual easy-run HR (for the chart): the median of runs of 20+ min, 8 weeks, or 4 months after a break.
+function usualRunHr() {
+  for (const days of [56, 120]) {
+    const xs = runsSince(days).filter(a => a.min >= 20 && a.hr).map(a => a.hr).sort((a, b) => a - b);
+    if (xs.length >= (days === 56 ? 3 : 2)) return xs[Math.floor(xs.length / 2)];
+  }
+  return null;
+}
+// What the plan uses: the five words in bpm (own anchors where set), and the watch's zones for labels.
 function hrTargets() {
-  const h = state.zones?.hr; if (!hrZonesOk(h?.b)) return null;
-  const b = h.b, u = usualRunHr();
-  const auto = u ? Math.min(3, Math.max(2, b.findIndex(x => u <= x) + 1 || 4)) : 2;
-  const e = h.easy === 2 || h.easy === 3 ? h.easy : auto;
-  return {b, e, auto, usual: u, easyMax: b[e - 1], tempo: [b[e - 1] + 1, b[e]], hard: e === 2 ? [b[2] + 1, b[3]] : null, intervals: b[3]};
+  const a = hrAuto(); if (!a) return null;
+  const own = zMode() === 'own' ? state.zones?.own || {} : {};
+  const lt1 = +own.lt1 > 90 ? +own.lt1 : a.lt1, lt2 = +own.lt2 > lt1 ? +own.lt2 : Math.max(a.lt2, lt1 + 12);
+  const steady = Math.min(lt2 - 10, +own.lt1 > 90 ? lt1 + DRIFT : Math.max(a.steady, lt1 + 1));
+  const b = a.b, e = Math.max(1, b.filter(x => x <= steady).length);
+  return {...a, b, e, usual: usualRunHr(), lt1, lt2, steady, easyMax: lt1, steadyMax: steady,
+    tempo: [steady + 1, lt2 - 9], thr: [lt2 - 8, lt2], hard: [lt2 - 8, lt2], intervals: lt2 + 1, own: !!(+own.lt1 || +own.lt2)};
+}
+// The five words with their bpm and where they sit on the watch.
+function hrWords(t) {
+  const zoneOf = v => (t.b.findIndex(x => v <= x) + 1) || 5;
+  const span = (lo, hi) => { const a = zoneOf(lo), c = zoneOf(hi); return a === c ? `Z${a}` : `Z${a}–Z${c}`; };
+  return [
+    {k: 'easy', n: L('Лёгкий', 'Easy'), lo: null, hi: t.lt1, what: L('лёгкий и восстановительный бег, разминка', 'easy and recovery runs, warm-ups')},
+    {k: 'steady', n: L('Ровный', 'Steady'), lo: t.lt1 + 1, hi: t.steady, what: L('длинная — к концу пульс дрейфует сюда, это нормально', 'long runs — HR drifts here late on, that’s fine')},
+    {k: 'tempo', n: L('Темп', 'Tempo'), lo: t.tempo[0], hi: t.tempo[1], what: L('темповые отрезки', 'tempo blocks')},
+    {k: 'thr', n: L('Порог', 'Threshold'), lo: t.thr[0], hi: t.thr[1], what: L('пороговые отрезки', 'threshold reps')},
+    {k: 'hard', n: L('Тяжёлый', 'Hard'), lo: t.intervals, hi: null, what: L('короткие интервалы', 'short intervals')},
+  ].map(w => ({...w, zones: span(w.lo ?? t.b[0] - 20, w.hi ?? t.b[3] + 10)}));
 }
 const zSpan = (t, from, to) => to === from ? `Z${from}` : `Z${from}–Z${to}`;
-// Plan text written with zone labels («Z2 ровно», «3×10 мин Z3») → the same thing in beats, from the person's zones.
+// Plan text written with zone labels («Z2 ровно», «3×10 мин Z3») → the same thing in beats.
 function hrText(text) {
   const t = hrTargets(); if (!t || !text) return text;
   return String(text).replace(/\bZ([1-5])(?:\s*[–-]\s*Z?([1-5]))?\b/g, (m, a, c) => {
     const hi = Math.max(+a, +(c || a));
-    if (hi <= 2) return L(`пульс до ${t.easyMax}`, `HR under ${t.easyMax}`);
+    if (hi <= 2) return L(`пульс до ${t.lt1}`, `HR under ${t.lt1}`);
     if (hi === 3) return L(`пульс ${t.tempo[0]}–${t.tempo[1]}`, `HR ${t.tempo[0]}–${t.tempo[1]}`);
-    if (hi === 4) return t.hard ? L(`пульс ${t.hard[0]}–${t.hard[1]}`, `HR ${t.hard[0]}–${t.hard[1]}`) : L(`пульс ${t.tempo[0]}–${t.tempo[1]}`, `HR ${t.tempo[0]}–${t.tempo[1]}`);
+    if (hi === 4) return L(`пульс ${t.thr[0]}–${t.thr[1]}`, `HR ${t.thr[0]}–${t.thr[1]}`);
     return L(`пульс от ${t.intervals}`, `HR ${t.intervals}+`);
   });
 }
+// Run threshold (critical speed) from summaries: the easy-run anchor (pace at HR ≤ LT1 / 0.823) and a floor from the
+// fastest 5/10 km, recency- and break-adjusted. Training runs aren't all-out, so it's a range, never faster than the anchor.
+function thrAuto() {
+  const t = hrAuto(), brk = breakOf('run'), out = {brk};
+  const sp = a => a.km * 1000 / (a.min * 60);
+  if (t) for (const days of [30, 60]) {
+    const xs = actsSince(days, a => a.sport === 'run' && a.min >= 20 && a.km >= 3 && a.hr && a.hr <= t.lt1 + 3 && a.hr >= t.lt1 - 12).map(sp).sort((a, b) => a - b);
+    if (xs.length >= 2) { out.vEasy = xs[Math.floor(xs.length / 2)]; out.nEasy = xs.length; break; }
+  }
+  let floor = null;
+  for (const a of actsSince(90, x => x.sport === 'run' && (x.f5 || x.f10))) {
+    for (const [d, s] of [[10000, a.f10], [5000, a.f5]]) {
+      if (!s || s < 1200) continue;
+      const v = (d - D_PRIME) / s * adj(a, brk);
+      if (v > 0 && (!floor || v > floor.v)) floor = {v, d, s, date: a.start.slice(0, 10)};
+    }
+  }
+  if (floor) out.floor = floor;
+  const csB = out.vEasy ? out.vEasy / T1_CS : null;
+  let fv = floor?.v || null;
+  if (out.vEasy && (!fv || fv < out.vEasy * 1.05)) { fv = out.vEasy * 1.05; out.floorFromEasy = true; }
+  if (csB && fv) { const cs = Math.sqrt(csB * Math.min(fv, csB)); Object.assign(out, {cs, lo: Math.min(fv, csB), hi: csB}); }
+  else if (fv) Object.assign(out, {cs: fv, lo: fv, hi: fv * 1.08});
+  else return null;
+  out.pace = Math.round(1000 / out.cs); out.paceSlow = Math.round(1000 / out.lo); out.paceFast = Math.round(1000 / out.hi);
+  return out;
+}
+// FTP from the best 20-min (× 0.95) or 60-min power over 90 days, recency- and break-adjusted (B: Borszcz 2019).
+function ftpAuto() {
+  const brk = breakOf('bike');
+  let best = null;
+  for (const a of actsSince(90, x => x.sport === 'bike' && (x.p20 || x.p60))) {
+    const k = adj(a, brk);
+    for (const [v, dur] of [[a.p20 * 0.95, 20], [a.p60, 60]]) if (v && v * k > (best?.v || 0)) best = {v: v * k, raw: dur === 20 ? a.p20 : a.p60, dur, date: a.start.slice(0, 10)};
+  }
+  if (!best || best.v < 80) return null;
+  const st = trainStatus().s;
+  return {...best, v: Math.round(best.v), brk, pm: st === 'high' ? 0.09 : 0.12};
+}
+// What the plan uses: the person's own value in «own» mode when entered, the algorithm's otherwise.
+function effThr() { const own = zMode() === 'own' ? parsePace(state.zones?.thr) : null; return own || thrAuto()?.pace || null; }
+function effFtp() { const own = zMode() === 'own' ? +state.zones?.ftp : 0; return own || ftpAuto()?.v || null; }
 
 // Thresholds the person enters (state.zones: ftp W, thr run pace s/km, lthr bpm). Without them targets fall back to
 // effort (RPE, talk test) and the usual easy pace Garmin shows. Rule numbers and grades are the rulebook's.
@@ -2009,14 +2131,14 @@ const longestRun30 = () => Math.max(0, ...runsSince(30).map(a => a.min));
 const W = (f, a, b) => `${Math.round(f * a / 5) * 5}–${Math.round(f * b / 5) * 5} Вт`.replace(' Вт', L(' Вт', ' W'));
 const isKey = s => s.key || KINDS[s.kind].hard || s.kind.endsWith('_long');
 function sessionGuide(s) {
-  const z = state.zones || {}, ftp = +z.ftp || null, thr = parsePace(z.thr), ep = easyPace(), k = s.kind;
+  const ftp = effFtp(), thr = effThr(), ep = easyPace(), k = s.kind;
   const g = {goal: '', steps: [], targets: [], critical: []};
   const crit = (no, grade, ru, en) => g.critical.push({no, grade, text: L(ru, en)});
   const easyRun = () => {
     if (thr) g.targets.push(L(`Темп ${paceFmt(thr * 1.15)}–${paceFmt(thr * 1.3)}/км (порог ${paceFmt(thr)}/км + 15–30%)`, `Pace ${paceFmt(thr * 1.15)}–${paceFmt(thr * 1.3)}/km (threshold ${paceFmt(thr)}/km + 15–30%)`));
     else if (ep) g.targets.push(L(`Темп около ${paceFmt(ep)}/км — твой обычный по Garmin; если пульс ползёт вверх — медленнее`, `Pace around ${paceFmt(ep)}/km — your usual from Garmin; slow down if HR creeps up`));
     const ht = hrTargets();
-    if (ht) g.targets.push(L(`Пульс до ${ht.easyMax} — верх твоей лёгкой зоны (${zSpan(ht, 1, ht.e)} на часах)`, `HR under ${ht.easyMax} — the top of your easy zone (${zSpan(ht, 1, ht.e)} on the watch)`));
+    if (ht) g.targets.push(k === 'run_long' ? L(`Пульс до ${ht.lt1} — «Лёгкий»; к концу длинной можно до ${ht.steady} («Ровный»)`, `HR under ${ht.lt1} — Easy; late in the long run up to ${ht.steady} (Steady)`) : L(`Пульс до ${ht.lt1} — «Лёгкий»`, `HR under ${ht.lt1} — Easy`));
     g.targets.push(L('RPE 2–3 из 10: говоришь полными предложениями', 'RPE 2–3 of 10: you can talk in full sentences'));
   };
   const runCap = () => { const lr = longestRun30(); if (lr) crit(69, 'B', `Не дольше ${Math.round(lr * 1.1)} мин: самая длинная пробежка за 30 дней — ${lr} мин, +10% — предел. Пропущенное не докидывать.`, `No longer than ${Math.round(lr * 1.1)} min: your longest run in 30 days was ${lr} min; +10% is the cap. Don’t make up missed volume.`); };
@@ -2031,7 +2153,7 @@ function sessionGuide(s) {
     g.steps = [[L('Разминка', 'Warm-up'), L('15 мин лёгко + 3–4 ускорения по 20 с', '15 min easy + 3–4 × 20 s strides')], [L('Основное', 'Main'), hrText(s.detail) || L('5×3 мин тяжело (RPE 8), между — 2 мин трусцой', '5×3 min hard (RPE 8), 2 min jog between')], [L('Заминка', 'Cool-down'), L('10 мин лёгко', '10 min easy')]];
     if (thr) g.targets.push(L(`Пороговые отрезки: ${paceFmt(thr - 5)}–${paceFmt(thr + 5)}/км · отрезки 3–5 мин: ${paceFmt(thr - 20)}–${paceFmt(thr - 10)}/км`, `Threshold reps: ${paceFmt(thr - 5)}–${paceFmt(thr + 5)}/km · 3–5 min reps: ${paceFmt(thr - 20)}–${paceFmt(thr - 10)}/km`));
     const qt = hrTargets();
-    if (qt) g.targets.push(L(`Пульс: темп и порог ${qt.tempo[0]}–${(qt.hard || qt.tempo)[1]} (Z${qt.e + 1}${qt.hard ? '–Z4' : ''}), короткие отрезки к концу — от ${qt.intervals} (Z5)`, `HR: tempo and threshold ${qt.tempo[0]}–${(qt.hard || qt.tempo)[1]} (Z${qt.e + 1}${qt.hard ? '–Z4' : ''}), short reps by the end — ${qt.intervals}+ (Z5)`));
+    if (qt) g.targets.push(L(`Пульс: «Темп» ${qt.tempo[0]}–${qt.tempo[1]}, «Порог» ${qt.thr[0]}–${qt.thr[1]}, короткие отрезки к концу — от ${qt.intervals}`, `HR: Tempo ${qt.tempo[0]}–${qt.tempo[1]}, Threshold ${qt.thr[0]}–${qt.thr[1]}, short reps by the end — ${qt.intervals}+`));
     g.targets.push(L('RPE 7 на пороге, 8–9 на коротких отрезках; последний не хуже первого', 'RPE 7 at threshold, 8–9 on short reps; the last as good as the first'));
     crit(23, 'A/B', 'Полноценная VO2max-сессия — не меньше 15 мин работы в отрезках от 2 мин (5×3, 4×4).', 'A real VO2max session is at least 15 min of work in reps of 2 min or more (5×3, 4×4).');
     crit(39, 'C/B', 'Не в соседний день с другой тяжёлой; переносить только туда, где нет тяжёлого накануне и наутро.', 'Not next to another hard day; move it only where there’s nothing hard the day before or after.');
@@ -2088,70 +2210,14 @@ function sessionGuide(s) {
 }
 function guideHTML(s) {
   const g = sessionGuide(s);
-  const noZones = !state.zones?.ftp && !state.zones?.thr && (KINDS[s.kind].sport === 'run' || KINDS[s.kind].sport === 'bike');
+  const noZones = !effFtp() && !effThr() && (KINDS[s.kind].sport === 'run' || KINDS[s.kind].sport === 'bike');
   return `<div class="guide"><p class="guide-goal">${esc(g.goal)}</p>
     <div class="section-title">${L('Как делать', 'How to do it')}</div><div class="guide-steps">${g.steps.map(([a, b]) => `<div><b>${esc(a)}</b><span>${esc(b)}</span></div>`).join('')}</div>
     ${g.targets.length ? `<div class="section-title">${L('Твои цифры', 'Your numbers')}</div><ul class="plan-why">${g.targets.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
     ${noZones ? `<p class="hint" style="padding-top:6px"><button class="btn link" style="min-height:0;padding:0;display:inline;width:auto" data-a="zones-open">${L('Укажи FTP и пороговый темп', 'Add your FTP and threshold pace')}</button> ${L('— и здесь будут ватты и темп по зонам.', '— and this shows watts and pace by zone.')}</p>` : ''}
     ${g.critical.length ? `<div class="section-title">${L('Что критично', 'What matters most')}</div><ul class="guide-crit">${g.critical.map(c => `<li><span class="grade g${gradeKey(c.grade)}">${esc(gradeShort(c.grade))}</span><span>${esc(c.text)} <em class="muted">${L('правило', 'rule')} ${c.no}</em></span></li>`).join('')}</ul>` : ''}</div>`;
 }
-function hrZonesHTML() {
-  const h = state.zones?.hr || {}, b = h.b || [], t = hrTargets();
-  let out = `<div class="section-title">${L('Пульсовые зоны', 'Heart-rate zones')}</div>
-    <p class="hint" style="padding-bottom:8px">${L('Перепиши границы из часов: Garmin Connect → Настройки → Зоны пульса. Тогда план, разбор тренировок и часы говорят одними цифрами.', 'Copy the bounds from your watch: Garmin Connect → Settings → Heart rate zones. Then the plan, workout reviews and the watch use the same numbers.')}</p>
-    <div class="wiz-row four">${[0, 1, 2, 3].map(i => `<label class="field">Z${i + 1} ${L('до', 'to')}<input data-hrz="${i}" type="number" inputmode="numeric" min="60" max="230" value="${b[i] || ''}" placeholder="${[115, 134, 153, 172][i]}"></label>`).join('')}</div>`;
-  if (!t) return out + `<p class="hint">${L('Пока границ нет, в плане пульс не пишется — ориентиры по ощущениям.', 'Until the bounds are in, plans don’t quote HR — effort targets instead.')}</p>`;
-  out += `<div class="section-title" style="padding-top:18px">${L('Лёгкий бег у тебя — в зоне', 'Your easy runs sit in')}</div>
-    <div class="seg" role="group">${[2, 3].map(e => `<button data-a="hr-easy" data-e="${e}" aria-pressed="${t.e === e}">Z1–Z${e}${t.auto === e && !h.easy ? L(' · авто', ' · auto') : ''}</button>`).join('')}</div>
-    <p class="hint" style="padding-top:6px">${t.usual ? L(`Средний пульс твоих пробежек за 8 недель — ${t.usual}, это Z${t.b.findIndex(x => t.usual <= x) + 1 || 5}.`, `Your runs over 8 weeks average ${t.usual} — that’s Z${t.b.findIndex(x => t.usual <= x) + 1 || 5}.`) : ''} ${L('Зоны по % от максимума — лёгкий бег обычно в Z3; зоны по порогу — в Z2.', 'Zones by % of max — easy runs usually sit in Z3; threshold-based zones — in Z2.')}</p>`;
-  // One axis for everything: the watch's zones, what the plan asks for, and where the runs actually are
-  const lo = Math.max(60, t.b[0] - 25), hi = t.b[3] + 20, x = v => ((Math.min(hi, Math.max(lo, v)) - lo) / (hi - lo) * 100).toFixed(1);
-  const edges = [lo, ...t.b, hi];
-  const bands = [[L('Лёгкий, длинный', 'Easy, long'), lo, t.easyMax, 'easy'], [L('Темп, порог', 'Tempo, threshold'), t.tempo[0], (t.hard || t.tempo)[1], 'tempo'], [L('Интервалы', 'Intervals'), t.intervals, hi, 'int']];
-  out += `<figure class="hrz" style="--sc:var(--run)" aria-label="${esc(L(`Зоны: Z1 до ${t.b[0]}, Z2 до ${t.b[1]}, Z3 до ${t.b[2]}, Z4 до ${t.b[3]}. Лёгкий до ${t.easyMax}, темп ${t.tempo[0]}–${(t.hard || t.tempo)[1]}, интервалы от ${t.intervals}.`, `Zones: Z1 to ${t.b[0]}, Z2 to ${t.b[1]}, Z3 to ${t.b[2]}, Z4 to ${t.b[3]}. Easy under ${t.easyMax}, tempo ${t.tempo[0]}–${(t.hard || t.tempo)[1]}, intervals ${t.intervals}+.`))}">
-    <div class="hrz-bar zones">${[0, 1, 2, 3, 4].map(i => `<i class="z${i + 1}" style="flex:${edges[i + 1] - edges[i]}"><span>Z${i + 1}</span></i>`).join('')}</div>
-    <div class="hrz-ticks num">${t.b.map(v => `<span style="left:${x(v)}%">${v}</span>`).join('')}</div>
-    <div class="hrz-bands">${bands.map(([n, a, z2, c]) => `<div class="hrz-band"><span class="hrz-name">${esc(n)}</span><span class="hrz-track"><i class="${c}" style="left:${x(a)}%;width:${(x(z2) - x(a)).toFixed(1)}%"></i></span><span class="hrz-val num">${c === 'int' ? L('от ', '') + a + (c === 'int' && lang !== 'ru' ? '+' : '') : c === 'easy' ? L('до ', '< ') + z2 : a + '–' + z2}</span></div>`).join('')}
-      ${t.usual ? `<div class="hrz-band"><span class="hrz-name">${L('Твои пробежки', 'Your runs')}</span><span class="hrz-track"><b class="hrz-dot" style="left:${x(t.usual)}%"></b></span><span class="hrz-val num">${t.usual}</span></div>` : ''}</div>
-    <figcaption class="hint">${L('Эти цифры план пишет в тренировках вместо названий зон. Пульс на веле обычно на 5–10 ниже, чем в беге при том же усилии.', 'The plan quotes these numbers in sessions instead of zone names. Cycling HR usually runs 5–10 lower than running at the same effort.')}</figcaption></figure>`;
-  return out;
-}
-/* ---------- thresholds from data ---------- */
-// Garmin's activity summaries carry the best 20/60-min power, the fastest 5/10 km inside a run and the peak HR.
-// Training sessions aren't all-out tests, so every estimate here is a floor: it errs low and slow, which is the safe side —
-// targets come out a little easy, never too hard. FTP ±5% either way (rule 25); retest every 6–8 weeks (rule 28).
-const RIEGEL = 1.06;
-function thrEstimates() {
-  const list = state.local.acts?.list || [], s90 = ymd(addDays(new Date(), -90)), s180 = ymd(addDays(new Date(), -180));
-  const recent = list.filter(a => a.start.slice(0, 10) >= s90), out = {};
-  const rides = recent.filter(a => a.sport === 'bike' && (a.p20 || a.p60));
-  if (rides.length) {
-    const b20 = rides.reduce((m, a) => (a.p20 || 0) > (m?.p20 || 0) ? a : m, null), b60 = rides.reduce((m, a) => (a.p60 || 0) > (m?.p60 || 0) ? a : m, null);
-    const f20 = b20?.p20 ? Math.round(b20.p20 * 0.95) : 0, f60 = b60?.p60 || 0;
-    const v = Math.max(f20, f60);
-    if (v >= 80 && v <= 500) out.ftp = f20 >= f60 ? {v, raw: b20.p20, dur: 20, date: b20.start.slice(0, 10), n: rides.length} : {v, raw: f60, dur: 60, date: b60.start.slice(0, 10), n: rides.length};
-  }
-  // Run threshold ≈ the pace held for about an hour ≈ 10 km pace for amateurs; a 5 km best goes to 10 km by Riegel.
-  const runs = recent.filter(a => a.sport === 'run' && (a.f5 || a.f10));
-  let best = null;
-  for (const a of runs) {
-    if (a.f10) { const pace = a.f10 / 10; if (!best || pace < best.v) best = {v: pace, raw: a.f10, km: 10, date: a.start.slice(0, 10)}; }
-    if (a.f5) { const pace = a.f5 * Math.pow(2, RIEGEL) / 10; if (!best || pace < best.v) best = {v: pace, raw: a.f5, km: 5, date: a.start.slice(0, 10)}; }
-  }
-  if (best && best.v >= 150 && best.v <= 600) out.thr = {...best, v: Math.round(best.v), n: runs.length};
-  // Peak HR over half a year from runs and rides; a lone spike 8+ above the next one is an optical glitch.
-  const peaks = list.filter(a => a.start.slice(0, 10) >= s180 && a.hrMax && (a.sport === 'run' || a.sport === 'bike')).sort((a, b) => b.hrMax - a.hrMax);
-  if (peaks.length >= 3) { const top = peaks[0].hrMax - peaks[1].hrMax > 8 ? peaks[1] : peaks[0]; out.hrMax = {v: top.hrMax, date: top.start.slice(0, 10), n: peaks.length}; }
-  return out;
-}
-// The max HR the watch's zones are cut from, when they are the usual %max split (60/70/80/90%).
-function zonesMax(b) {
-  if (!hrZonesOk(b)) return null;
-  const M = b[3] / 0.9;
-  return [0.6, 0.7, 0.8].every((f, i) => Math.abs(b[i] - M * f) <= 2) ? Math.round(M) : null;
-}
-const pctZones = M => [0.6, 0.7, 0.8, 0.9].map(f => Math.round(M * f));
-// Old caches came from before the server sent these fields: refetch 90 days once.
+// Old caches came from before the server sent hrMax/p20/f5/f10: refetch 90 days once.
 const thrFetch = {done: false};
 async function ensureThrData() {
   if (thrFetch.done || hkOn() || !state.local.acts?.linked) return;
@@ -2161,56 +2227,72 @@ async function ensureThrData() {
   if (await loadHistory(s90, ymd(new Date())) != null) render();
 }
 const fDate = d => parseYmd(d).toLocaleDateString(lang === 'ru' ? 'ru-RU' : 'en-GB', {day: 'numeric', month: 'short'});
-// Which estimates are worth a word: none set yet, a better one than set, or the set one is 6+ weeks old and off by 3%+.
-function thrNews() {
-  const e = thrEstimates(), z = state.zones || {}, at = z.at || {}, old = f => !at[f] || (Date.now() - parseYmd(at[f])) / 864e5 >= 42, out = [];
-  if (e.ftp) { const c = +z.ftp; if (!c || e.ftp.v >= c * 1.03 || (old('ftp') && Math.abs(e.ftp.v - c) >= c * 0.03)) out.push('ftp'); }
-  if (e.thr) { const c = parsePace(z.thr); if (!c || e.thr.v <= c - 5 || (old('thr') && Math.abs(e.thr.v - c) >= 5)) out.push('thr'); }
-  return {e, out, sig: out.map(f => f + ':' + e[f].v).join(',')};
-}
-function thrSuggestHTML() {
-  const {e, out} = thrNews(), z = state.zones || {}, t = hrTargets();
-  const rows = [];
-  if (e.ftp) {
-    const c = +z.ftp, how = L(`лучшие ${e.ftp.dur} мин за 90 дней — ${e.ftp.raw} Вт (${fDate(e.ftp.date)})${e.ftp.dur === 20 ? ' × 0,95' : ''}`, `best ${e.ftp.dur} min in 90 days — ${e.ftp.raw} W (${fDate(e.ftp.date)})${e.ftp.dur === 20 ? ' × 0.95' : ''}`);
-    const note = c && c > e.ftp.v * 1.03 ? L(' Твой FTP выше — нормально: оценка по тренировкам, не по тесту.', ' Yours is higher — fine: this is from training, not a test.') : '';
-    rows.push(`<div class="row thr-row"><span class="t"><b>FTP ≈ ${e.ftp.v} ${L('Вт', 'W')}</b><span>${how}.${note}</span></span>${out.includes('ftp') ? `<button class="nav-btn" data-a="thr-take" data-f="ftp">${L('Взять', 'Use')}</button>` : ''}</div>`);
-  }
-  if (e.thr) {
-    const how = L(`самые быстрые ${e.thr.km} км внутри тренировки — ${hms(e.thr.raw)} (${fDate(e.thr.date)})${e.thr.km === 5 ? ', пересчёт на 10 км' : ''}`, `fastest ${e.thr.km} km inside a run — ${hms(e.thr.raw)} (${fDate(e.thr.date)})${e.thr.km === 5 ? ', scaled to 10 km' : ''}`);
-    rows.push(`<div class="row thr-row"><span class="t"><b>${L('Порог бега', 'Run threshold')} ≈ ${paceFmt(e.thr.v)}/${L('км', 'km')}</b><span>${how}.</span></span>${out.includes('thr') ? `<button class="nav-btn" data-a="thr-take" data-f="thr">${L('Взять', 'Use')}</button>` : ''}</div>`);
-  }
-  if (e.hrMax) {
-    const M = t ? zonesMax(t.b) : null;
-    let txt = L(`За полгода пульс доходил до ${e.hrMax.v} (${fDate(e.hrMax.date)}). Реальный максимум не ниже.`, `Over six months HR peaked at ${e.hrMax.v} (${fDate(e.hrMax.date)}). Your true max is at least that.`), btn = '';
-    if (M && e.hrMax.v > M + 2) txt += ' ' + L(`Зоны на часах посчитаны от ${M} — это ниже. Обнови максимум в Garmin и перепиши зоны.`, `Your watch zones are cut from ${M} — lower than that. Update max HR in Garmin and copy the zones again.`);
-    else if (M) txt += ' ' + L(`Зоны на часах — от максимума ${M}, сходится.`, `Your watch zones are cut from a max of ${M} — consistent.`);
-    else if (!t) { const zb = pctZones(e.hrMax.v); txt += ' ' + L(`Зоны от него (60/70/80/90%): Z1 до ${zb[0]}, Z2 до ${zb[1]}, Z3 до ${zb[2]}, Z4 до ${zb[3]} — чуть ниже настоящих, это безопасная сторона. Точнее — переписать из часов.`, `Zones from it (60/70/80/90%): Z1 to ${zb[0]}, Z2 to ${zb[1]}, Z3 to ${zb[2]}, Z4 to ${zb[3]} — a little low, the safe side. Copying from the watch is better.`); btn = `<button class="nav-btn" data-a="thr-take" data-f="hr">${L('Взять', 'Use')}</button>`; }
-    rows.push(`<div class="row thr-row"><span class="t"><b>${L('Макс. пульс', 'Max HR')} ≥ ${e.hrMax.v}</b><span>${txt}</span></span>${btn}</div>`);
-  }
-  if (!rows.length) return '';
-  return `<div class="section-title" style="padding-top:14px">${L('Из твоих тренировок', 'From your training')}</div><div class="list">${rows.join('')}</div>
-    <p class="hint" style="padding-top:6px">${L('Тренировки — не тест на максимум, поэтому оценки скорее занижены: зоны выйдут чуть легче, не тяжелее. Тест 20 мин или старт дадут точнее.', 'Training isn’t an all-out test, so these lean low: zones come out a touch easy, never too hard. A 20-min test or a race is more precise.')}</p>`;
-}
-function thrNudgeHTML() {
-  if (!state.plan) return '';
-  const n = thrNews(), sports = new Set(state.plan.sports || []);
-  const out = n.out.filter(f => sports.has(f === 'ftp' ? 'bike' : 'run'));
-  if (!out.length || state.zones?.seen === n.sig) return '';
-  const what = out.map(f => f === 'ftp' ? `FTP ≈ ${n.e.ftp.v} ${L('Вт', 'W')}` : `${L('порог бега', 'run threshold')} ≈ ${paceFmt(n.e.thr.v)}/${L('км', 'km')}`).join(', ');
-  return `<button class="nudge" data-a="thr-nudge" data-sig="${esc(n.sig)}"><span>${L('По тренировкам', 'From your training')}: ${what}</span><span class="nudge-go">${L('Посмотреть', 'Review')} ›</span></button>`;
-}
+const STATUS_RU = {low: 'начальный', med: 'средний', high: 'высокий'}, STATUS_EN = {low: 'beginner', med: 'intermediate', high: 'trained'};
+
+// Settings → «Пороги и зоны»: one switch for everything, the five words over the watch's zones, then pace and watts.
 function zonesHTML() {
-  const z = state.zones || {}, ep = easyPace();
-  return `<div class="section-title" id="zones">${L('Пороги и зоны', 'Thresholds and zones')}</div>
-    <p class="hint" style="padding-bottom:10px">${L('Из них считаются ватты, темп и пульс в описании тренировок. Не знаешь — оставь пустым: будут ориентиры по ощущениям.', 'Watts, pace and HR in session guides come from these. Not sure — leave blank and you get effort-based targets.')}${ep ? ' ' + L(`Твой обычный темп бега по Garmin — ${paceFmt(ep)}/км.`, `Your usual run pace from Garmin is ${paceFmt(ep)}/km.`) : ''}</p>
-    <div class="wiz-row"><label class="field">FTP, ${L('Вт', 'W')}<input data-zone="ftp" type="number" inputmode="numeric" min="80" max="500" value="${esc(z.ftp || '')}" placeholder="230"></label>
-    <label class="field">${L('Порог бега, мин/км', 'Run threshold, min/km')}<input data-zone="thr" inputmode="numeric" value="${esc(z.thr || '')}" placeholder="4:30"></label>
-</div>
-    ${thrSuggestHTML()}
-    ${hrZonesHTML()}
-    <p class="hint" style="padding-top:12px">${L('FTP — из теста 20 мин × 0,95 или ramp-теста; порог бега — темп, который держишь ~час (≈ темп 10 км у любителя). Перепроверять раз в 6–8 недель (правило 28).', 'FTP — from a 20-min test × 0.95 or a ramp test; run threshold — the pace you can hold ~an hour (≈ 10 km race pace for amateurs). Retest every 6–8 weeks (rule 28).')}</p>`;
+  const own = zMode() === 'own', z = state.zones || {}, t = hrTargets(), th = thrAuto(), fa = ftpAuto();
+  let h = `<div class="section-title" id="zones">${L('Пороги и зоны', 'Thresholds and zones')}</div>
+    <div class="seg" role="group" style="margin-bottom:8px"><button data-a="zmode" data-m="auto" aria-pressed="${!own}">${L('По моим тренировкам', 'From my training')}</button><button data-a="zmode" data-m="own" aria-pressed="${own}">${L('Свои значения', 'My own')}</button></div>
+    <p class="hint" style="padding-bottom:6px">${own ? L('Твои цифры главнее. Пустое поле — значение из алгоритма.', 'Your numbers win. A blank field takes the algorithm’s value.') : L('Приложение считает сам по тренировкам и обновляет. Пульс ведёт, темп и ватты — ориентир.', 'The app works these out from your training and keeps them current. Heart rate leads; pace and watts are guides.')}</p>`;
+  // heart rate
+  if (t) {
+    const words = hrWords(t), lo = Math.max(60, t.b[0] - 25), hi = t.b[3] + 18, x = v => ((Math.min(hi, Math.max(lo, v)) - lo) / (hi - lo) * 100).toFixed(1);
+    const wEdges = [lo, t.lt1, t.steady, t.tempo[1], t.thr[1], hi], zEdges = [lo, ...t.b, hi];
+    h += `<figure class="hrz" style="--sc:var(--run)">
+      <div class="hrz-lab">${L('Тренировка', 'Session')}</div>
+      <div class="hrz-bar zones">${words.map((w, i) => `<i class="z${i + 1}" style="flex:${Math.max(1, wEdges[i + 1] - wEdges[i])}"><span>${esc(w.n)}</span></i>`).join('')}</div>
+      <div class="hrz-ticks num">${[t.lt1, t.steady, t.tempo[1], t.thr[1]].map(v => `<span style="left:${x(v)}%">${v}</span>`).join('')}</div>
+      <div class="hrz-lab">${t.derived ? L('Зоны (от максимума)', 'Zones (from max HR)') : L('Зоны на часах', 'Watch zones')}</div>
+      <div class="hrz-bar zones thin">${[0, 1, 2, 3, 4].map(i => `<i class="z${i + 1}" style="flex:${zEdges[i + 1] - zEdges[i]}"><span>Z${i + 1}</span></i>`).join('')}</div>
+      <div class="hrz-ticks num">${t.b.map(v => `<span style="left:${x(v)}%">${v}</span>`).join('')}</div>
+      ${t.usual ? `<div class="hrz-band"><span class="hrz-name">${L('Твои пробежки', 'Your runs')}</span><span class="hrz-track"><b class="hrz-dot" style="left:${x(t.usual)}%"></b></span><span class="hrz-val num">${t.usual}</span></div>` : ''}
+    </figure>
+    <div class="list">${words.map(w => `<div class="row thr-row"><span class="t"><b>${esc(w.n)} · <span class="num" style="display:inline;color:inherit">${w.lo == null ? L('до ', '≤ ') + w.hi : w.hi == null ? L('от ', '') + w.lo + (lang === 'ru' ? '' : '+') : w.lo + '–' + w.hi}</span></b><span>${esc(w.what)} · ${w.zones} ${L('на часах', 'on the watch')}</span></span></div>`).join('')}</div>`;
+    const why = [];
+    why.push(t.watchMax && t.peak ? L(`Максимум ≈${t.max}: часы считают от ${t.watchMax}, пик за полгода ${t.peak}.`, `Max ≈${t.max}: the watch uses ${t.watchMax}, your 6-month peak is ${t.peak}.`)
+      : t.peak ? L(`Максимум ≈${t.max} — пик за полгода (${fDate(t.peakDate)}); настоящий не ниже.`, `Max ≈${t.max} — your 6-month peak (${fDate(t.peakDate)}); the real one is no lower.`)
+      : L(`Максимум ≈${t.max} — из зон на часах.`, `Max ≈${t.max} — from the watch zones.`));
+    if (!t.own) why.push(L(`Лёгкий — до ${fNum(VT1_K[t.status.s] * 100, 1)}% максимума: уровень ${STATUS_RU[t.status.s]}${t.status.h ? `, ~${fNum(t.status.h, 1)} ч в неделю` : ''}. У разных людей ±10 ударов — если на лёгком тяжело говорить, поставь своё.`, `Easy — up to ${Math.round(VT1_K[t.status.s] * 1000) / 10}% of max: ${STATUS_EN[t.status.s]}${t.status.h ? `, ~${fNum(t.status.h, 1)} h a week` : ''}. People vary by ±10 bpm — if talking is hard on easy runs, set your own.`));
+    h += `<p class="hint" style="padding-top:6px">${why.join(' ')}</p>`;
+    if (t.watchLow) h += `<p class="hint warn-text">${L(`Пульс доходил до ${t.peak} — выше максимума на часах (${t.watchMax}). Обнови максимум в Garmin и перепиши зоны ниже.`, `HR reached ${t.peak} — above the watch’s max (${t.watchMax}). Update max HR in Garmin and copy the zones below.`)}</p>`;
+    if (own) h += `<div class="wiz-row"><label class="field">${L('Лёгкий до, уд/мин', 'Easy up to, bpm')}<input data-zown="lt1" type="number" inputmode="numeric" min="100" max="200" value="${esc(z.own?.lt1 || '')}" placeholder="${hrAuto()?.lt1 || ''}"></label><label class="field">${L('Порог до, уд/мин', 'Threshold up to, bpm')}<input data-zown="lt2" type="number" inputmode="numeric" min="120" max="215" value="${esc(z.own?.lt2 || '')}" placeholder="${hrAuto()?.lt2 || ''}"></label></div>`;
+  } else h += `<p class="hint">${L('Пульса пока нет: подключи Garmin или впиши зоны с часов ниже — до тех пор ориентиры по ощущениям.', 'No heart-rate data yet: connect Garmin or copy your watch zones below — until then, effort targets.')}</p>`;
+
+  // run threshold
+  const thr = effThr(), ownThr = own && parsePace(z.thr);
+  h += `<div class="section-title" style="padding-top:18px">${L('Порог бега', 'Run threshold')}</div>`;
+  if (thr) {
+    let why = '';
+    if (ownThr) why = L('Твоё значение.', 'Your value.');
+    else if (th) {
+      const parts = [];
+      if (th.vEasy) parts.push(L(`лёгкий бег ${paceFmt(1000 / th.vEasy)}/км при пульсе до ${hrTargets()?.lt1}`, `easy runs at ${paceFmt(1000 / th.vEasy)}/km under ${hrTargets()?.lt1} bpm`));
+      if (th.floor) parts.push(L(`быстрые ${th.floor.d / 1000} км — ${hms(th.floor.s)} (${fDate(th.floor.date)})`, `fastest ${th.floor.d / 1000} km — ${hms(th.floor.s)} (${fDate(th.floor.date)})`));
+      if (th.brk) parts.push(L(`пауза ${th.brk.weeks} нед. — темп до неё взят на ${Math.round(th.brk.delta * 100)}% медленнее`, `a ${th.brk.weeks}-week break — pace from before it taken ${Math.round(th.brk.delta * 100)}% slower`));
+      why = L(`По тренировкам: ${parts.join('; ')}. Это не тест, поэтому диапазон: пороговые отрезки веди по пульсу, темп — ориентир.`, `From training: ${parts.join('; ')}. Not a test, so it’s a range: run threshold reps by heart rate, pace is a guide.`);
+    }
+    h += `<div class="list"><div class="row thr-row"><span class="t"><b class="num">≈ ${paceFmt(thr)}/${L('км', 'km')}${!ownThr && th && th.paceSlow !== th.paceFast ? ` <span style="display:inline;color:var(--muted);font-weight:400">· ${paceFmt(th.paceFast)}–${paceFmt(th.paceSlow)}</span>` : ''}</b><span>${why}</span></span></div></div>`;
+  } else h += `<p class="hint">${L('Нужны хотя бы две лёгкие пробежки по 20+ мин с пульсом — тогда посчитаю.', 'Two easy runs of 20+ min with heart rate and it’s worked out.')}</p>`;
+  if (own) h += `<div class="wiz-row"><label class="field">${L('Свой порог, мин/км', 'Own threshold, min/km')}<input data-zone="thr" inputmode="numeric" value="${esc(z.thr || '')}" placeholder="${th ? paceFmt(th.pace) : '4:50'}"></label></div>`;
+
+  // FTP
+  const ftp = effFtp(), ownFtp = own && +z.ftp;
+  h += `<div class="section-title" style="padding-top:18px">FTP</div>`;
+  if (ftp) {
+    const why = ownFtp ? L('Твоё значение.', 'Your value.') : L(`Лучшие ${fa.dur} мин за 90 дней — ${fa.raw} Вт (${fDate(fa.date)})${fa.dur === 20 ? ' × 0,95' : ''}${fa.brk ? `, пауза ${fa.brk.weeks} нед. — минус ${Math.round(fa.brk.delta * 100)}%` : ''}. Тренировка — не тест, так что FTP скорее не ниже. Точность ±${Math.round(fa.pm * 100)}%.`, `Best ${fa.dur} min in 90 days — ${fa.raw} W (${fDate(fa.date)})${fa.dur === 20 ? ' × 0.95' : ''}${fa.brk ? `, a ${fa.brk.weeks}-week break — minus ${Math.round(fa.brk.delta * 100)}%` : ''}. Training isn’t a test, so FTP is likely no lower. ±${Math.round(fa.pm * 100)}%.`);
+    h += `<div class="list"><div class="row thr-row"><span class="t"><b class="num">${ftp} ${L('Вт', 'W')}</b><span>${why}</span></span></div></div>`;
+  } else h += `<p class="hint">${L('Нужен заезд с измерителем мощности — тогда посчитаю.', 'A ride with a power meter and it’s worked out.')}</p>`;
+  if (own) h += `<div class="wiz-row"><label class="field">${L('Свой FTP, Вт', 'Own FTP, W')}<input data-zone="ftp" type="number" inputmode="numeric" min="80" max="500" value="${esc(z.ftp || '')}" placeholder="${fa?.v || 230}"></label></div>`;
+
+  // the watch's zones, folded: they're the frame the words sit on
+  const b = z.hr?.b || [];
+  h += `<details class="set-more" style="margin-top:14px"><summary>${L('Зоны с часов', 'Watch zones')} <span class="muted num">${hrZonesOk(b) ? '· ' + b.join(' / ') : L('· не заданы', '· not set')}</span></summary>
+    <p class="hint">${L('Перепиши верхние границы Z1–Z4: Garmin Connect → Настройки → Зоны пульса. Тогда номера зон в приложении совпадут с часами.', 'Copy the tops of Z1–Z4: Garmin Connect → Settings → Heart rate zones. Then zone numbers match your watch.')}</p>
+    <div class="wiz-row four">${[0, 1, 2, 3].map(i => `<label class="field">Z${i + 1} ${L('до', 'to')}<input data-hrz="${i}" type="number" inputmode="numeric" min="60" max="230" value="${b[i] || ''}" placeholder="${[115, 134, 153, 172][i]}"></label>`).join('')}</div></details>`;
+  return h;
 }
+function thrNudgeHTML() { return ''; }
 
 /* ---------- week review ---------- */
 // What happened in a week, without blame (rules 97–99): sessions against plan, time against the outlook,
@@ -2453,7 +2535,6 @@ function pauseRpeHTML(wk, ti) {
   let h = '';
   if (state.pause && ti >= 0 && ti <= 6) h += `<button class="nudge" data-a="resume"><span>${L(`Пауза с ${fDay(state.pause.from)} — ${PAUSE_WHY[state.pause.reason]?.[0] || ''}`, `Paused since ${fDay(state.pause.from)} — ${PAUSE_WHY[state.pause.reason]?.[1] || ''}`)}</span><span class="nudge-go">${L('Вернуться', 'I’m back')} ›</span></button>`;
   const r = ti >= 0 && ti <= 6 ? rpeDue(wk) : null;
-  if (ti >= 0 && ti <= 6) h += thrNudgeHTML();
   if (r) h += `<button class="nudge" data-a="rpe-open" data-id="${r.id}"><span>${L(`Как ощущалась «${kName(r.kind)}»? Оцени усилие`, `How did “${kName(r.kind)}” feel? Rate the effort`)}</span><span class="nudge-go">1–10 ›</span></button>`;
   return h;
 }
@@ -3074,21 +3155,11 @@ document.addEventListener('click', ev => {
   if (a === 'block-add') { state.prefs.blocks = [...(state.prefs.blocks || []), {id: rid(), label: L('Семья', 'Family'), days: [5], from: '08:00', to: '12:00'}]; persist(); replanOpen(); render(); return; }
   if (a === 'block-del') { state.prefs.blocks = (state.prefs.blocks || []).filter(b => b.id !== el.dataset.id); persist(); replanOpen(); render(); return; }
   if (a === 'block-day') { const b = (state.prefs.blocks || []).find(x => x.id === el.dataset.id), d = +el.dataset.d; if (b) { b.days = b.days.includes(d) ? b.days.filter(x => x !== d) : [...b.days, d].sort(); persist(); replanOpen(); render(); } return; }
-  if (a === 'hr-easy') { const h = {...(state.zones?.hr || {}), easy: +el.dataset.e}; state.zones = {...(state.zones || {}), hr: h}; persist(); render(); return; }
+  if (a === 'zmode') { state.zones = {...(state.zones || {}), mode: el.dataset.m === 'own' ? 'own' : 'auto'}; persist(); render(); return; }
   if (a === 'push-on') return pushEnable();
   if (a === 'push-off') return pushDisable();
   if (a === 'push-test') return pushTest();
-  if (a === 'thr-take') {
-    const e = thrEstimates(), f = el.dataset.f, z = {...(state.zones || {})};
-    if (f === 'ftp' && e.ftp) z.ftp = e.ftp.v;
-    else if (f === 'thr' && e.thr) z.thr = paceFmt(e.thr.v);
-    else if (f === 'hr' && e.hrMax) z.hr = {...(z.hr || {}), b: pctZones(e.hrMax.v)};
-    else return;
-    if (f !== 'hr') z.at = {...(z.at || {}), [f]: todayStr()};
-    state.zones = z; persist(); render(); toast(L('Готово — цифры в тренировках обновились', 'Done — session targets updated')); return;
-  }
-  if (a === 'thr-nudge') { state.zones = {...(state.zones || {}), seen: el.dataset.sig}; persist(); }
-  if (a === 'zones-open' || a === 'thr-nudge') { closeSheet(); view.v = 'settings'; render(); setTimeout(() => document.getElementById('zones')?.scrollIntoView({block: 'start'}), 50); return; }
+  if (a === 'zones-open') { closeSheet(); view.v = 'settings'; render(); setTimeout(() => document.getElementById('zones')?.scrollIntoView({block: 'start'}), 50); return; }
   if (a === 'program') { view.v = 'program'; render(); scrollTo(0, 0); if (cloud.user && state.local.acts?.linked) ensureHist12().then(() => { if (view.v === 'program') render(); }); return; }
   if (a === 'undo') return undo(wk);
   if (a === 'dismiss') { lastChange = null; render(); return; }
@@ -3227,6 +3298,11 @@ document.addEventListener('change', ev => {
     if (hrZonesOk(b) || b.every(v => v > 0)) { if (!hrZonesOk(b)) toast(L('Границы должны расти: Z1 < Z2 < Z3 < Z4', 'Bounds must rise: Z1 < Z2 < Z3 < Z4')); render(); }
     return;
   }
+  if (el.dataset.zown != null) {
+    const v = Math.round(+el.value) || 0, own = {...(state.zones?.own || {})};
+    if (v) own[el.dataset.zown] = v; else delete own[el.dataset.zown];
+    state.zones = {...(state.zones || {}), own}; persist(); render(); return;
+  }
   if (el.dataset.zone != null) {
     const f = el.dataset.zone, v = el.value.trim();
     state.zones = {...(state.zones || {})};
@@ -3278,7 +3354,7 @@ document.addEventListener('input', ev => { if (ev.target.id === 'chatInput') gro
 document.addEventListener('pointerdown', ev => { if (ev.target.closest('.chip')) ev.preventDefault(); });
 
 // Debug hook for local testing (busy/acts injection); harmless in production.
-window.trainDebug = {get state() { return state; }, get cloud() { return cloud; }, push, briefs, thrEstimates, thrNews, synced, openChat, chatContext, openWizard, openOnboarding, onb, onbGo, hrTargets, hrText, wiz, rulesPlan, projectOutlook, outlookWeek, buildPlan, applyWeekPlan, makeWeekly, maybeWeekly, weeklyDue, planContext, proposalSheet, view, run, parse, onBusy, matchActs, render, persist, place, setBusy(wk, events) { state.local.busy[wk] = {at: Date.now(), events}; saveLocal(); onBusy(wk); }, setActs(list) { state.local.acts = {at: Date.now(), list, linked: true}; saveLocal(); for (const wk of Object.keys(state.weeks)) { const week = state.weeks[wk], before = snapshot(week), lines = matchActs(wk, week); if (lines.length) commit(wk, week, before, 'Garmin', lines); } render(); }};
+window.trainDebug = {get state() { return state; }, get cloud() { return cloud; }, push, briefs, hrAuto, thrAuto, ftpAuto, effThr, effFtp, hrWords, trainStatus, breakOf, synced, openChat, chatContext, openWizard, openOnboarding, onb, onbGo, hrTargets, hrText, wiz, rulesPlan, projectOutlook, outlookWeek, buildPlan, applyWeekPlan, makeWeekly, maybeWeekly, weeklyDue, planContext, proposalSheet, view, run, parse, onBusy, matchActs, render, persist, place, setBusy(wk, events) { state.local.busy[wk] = {at: Date.now(), events}; saveLocal(); onBusy(wk); }, setActs(list) { state.local.acts = {at: Date.now(), list, linked: true}; saveLocal(); for (const wk of Object.keys(state.weeks)) { const week = state.weeks[wk], before = snapshot(week), lines = matchActs(wk, week); if (lines.length) commit(wk, week, before, 'Garmin', lines); } render(); }};
 
 // Back from Google's consent screen: #google=ok or #google=<reason>.
 const googleBack = (location.hash.match(/google=([\w-]+)/) || [])[1];
