@@ -122,6 +122,7 @@ function briefs() {
       const head = ss.map(x => `${kName(x.kind)}, ${fDur(x.min)}${x.start != null ? L(' в ', ' at ') + hm(x.start) : ''}`).join(' · ');
       let body = ss.map(x => [sDetail(x), x.caution].filter(Boolean).join('. ')).join(' · ');
       if (state.health?.track) body += L(' · Отметь, как сегодня с болью.', ' · Log how the pain is today.');
+      body += window.TrainFood?.briefLine(di) || '';
       out[date] = {t: L('Сегодня: ', 'Today: ') + head, b: body.slice(0, 240)};
     }
   } catch (e) { console.warn('brief', e); }
@@ -2428,6 +2429,7 @@ function weekHTML() {
   h += planCardsHTML(wk);
   h += heroHTML(wk, week, effs, ti);
   h += painLine();
+  h += window.TrainFood?.card(wk, week, ti) || '';
   h += cardsHTML(wk, week);
   h += progressHTML(wk, doneS, ex, doneMin, planMin, L(`${doneS.length + ex.length} из ${counted.length + ex.length} трен.`, `${doneS.length + ex.length} of ${counted.length + ex.length} sessions`));
   const ow = outlookWeek(wk);
@@ -3069,6 +3071,7 @@ function settingsHTML() {
   ensureThrData();
   h += zonesHTML();
   h += healthHTML();
+  h += window.TrainFood?.settings() || '';
 
   h += pushHTML();
   // The assistant's allowance, invites (admins), language and privacy
@@ -3245,6 +3248,7 @@ document.addEventListener('click', ev => {
   if (a === 'block-del') { state.prefs.blocks = (state.prefs.blocks || []).filter(b => b.id !== el.dataset.id); persist(); replanOpen(); render(); return; }
   if (a === 'block-day') { const b = (state.prefs.blocks || []).find(x => x.id === el.dataset.id), d = +el.dataset.d; if (b) { b.days = b.days.includes(d) ? b.days.filter(x => x !== d) : [...b.days, d].sort(); persist(); replanOpen(); render(); } return; }
   if (a === 'zmode') { state.zones = {...(state.zones || {}), mode: el.dataset.m === 'own' ? 'own' : 'auto'}; persist(); render(); return; }
+  if (window.TrainFood?.click(a, el)) return;
   if (a === 'push-on') return pushEnable();
   if (a === 'push-off') return pushDisable();
   if (a === 'push-test') return pushTest();
@@ -3374,6 +3378,7 @@ document.addEventListener('change', ev => {
   const el = ev.target;
   if (el.id === 'icsFile' && el.files[0]) return icsFile(el.files[0]);
   if (el.id === 'pushAt' && /^\d{2}:\d{2}$/.test(el.value)) return pushTime(el.value);
+  if (window.TrainFood?.change(el)) return;
   if (el.dataset.tpl != null) {
     const tpl = state.template[+el.dataset.tpl], f = el.dataset.f;
     if (f === 'day') tpl.day = +el.value; else if (f === 'min') tpl.min = Math.max(15, Math.min(480, +el.value || 45));
@@ -3419,6 +3424,7 @@ document.addEventListener('change', ev => {
 });
 document.addEventListener('submit', ev => {
   ev.preventDefault();
+  if (ev.target.id === 'suppForm' || ev.target.id === 'foodText') return; // food.js
   if (ev.target.id === 'cmd') {
     const inp = $('#cmdInput'), v = inp.value.trim(); if (!v) return; inp.value = ''; inp.blur();
     // Plain commands go to the planner; anything it doesn't understand, or a question, goes to the assistant.
@@ -3444,6 +3450,8 @@ document.addEventListener('input', ev => { if (ev.target.id === 'chatInput') gro
 document.addEventListener('pointerdown', ev => { if (ev.target.closest('.chip')) ev.preventDefault(); });
 
 // Debug hook for local testing (busy/acts injection); harmless in production.
+// What add-ons (food.js) may use; nothing else in the app depends on them.
+window.TrainApp = {L, esc, kName, KINDS, fDur, effective, todayStr, DAYS, render, $, cloud, toast};
 window.trainDebug = {get state() { return state; }, get cloud() { return cloud; }, push, briefs, contribution, hrAuto, thrAuto, ftpAuto, effThr, effFtp, hrWords, trainStatus, breakOf, synced, openChat, chatContext, openWizard, openOnboarding, onb, onbGo, hrTargets, hrText, wiz, rulesPlan, projectOutlook, outlookWeek, buildPlan, applyWeekPlan, makeWeekly, maybeWeekly, weeklyDue, planContext, proposalSheet, view, run, parse, onBusy, matchActs, render, persist, place, setBusy(wk, events) { state.local.busy[wk] = {at: Date.now(), events}; saveLocal(); onBusy(wk); }, setActs(list) { state.local.acts = {at: Date.now(), list, linked: true}; saveLocal(); for (const wk of Object.keys(state.weeks)) { const week = state.weeks[wk], before = snapshot(week), lines = matchActs(wk, week); if (lines.length) commit(wk, week, before, 'Garmin', lines); } render(); }};
 
 // Back from Google's consent screen: #google=ok or #google=<reason>.
