@@ -2677,12 +2677,34 @@ function decoupling(S, sport) {
 // Efficiency factor: power (bike) or metres per minute (run, hike) per heartbeat.
 const efOf = (sport, x) => sport === 'bike' ? (x.np && x.hr ? x.np / x.hr : null) : (x.hr && x.mpm ? x.mpm / x.hr : null);
 const EASY = new Set(['run_easy', 'run_long', 'bike_easy', 'bike_long', 'hike', 'mobility']);
+// Seconds in each of the five words, from an HR series {t, hr}; a sample counts until the next one.
+function wordTimes(ser, t) {
+  const edges = [t.lt1, t.steady, t.tempo[1], t.thr[1]], out = [0, 0, 0, 0, 0];
+  for (let i = 0; i < ser.t.length - 1; i++) {
+    const hr = ser.hr[i], dt = ser.t[i + 1] - ser.t[i];
+    if (hr == null || !(dt > 0) || dt > 60) continue;
+    const k = edges.findIndex(x => hr <= x); out[k === -1 ? 4 : k] += dt;
+  }
+  return out;
+}
 function analyse(d, base, sid) {
   const S = d.summary, sp = sportOfSummary(S), ser = d.series, verdicts = [], best = [];
   const sess = sid ? state.weeks[view.wk]?.sessions.find(x => x.id === sid) : null;
   // 1. intensity, against what was planned when there was a plan
+  const ht = hrTargets(), wt = ht && ser?.t && ser?.hr ? wordTimes(ser, ht) : null, wtt = wt ? wt.reduce((a, b) => a + b, 0) : 0;
   const z = base?.hrz, zt = z ? z.reduce((a, b) => a + b, 0) : 0;
-  if (zt > 600) {
+  if (wtt > 600) {
+    const pc = i => Math.round(wt[i] / wtt * 100), easy = pc(0) + pc(1), up = Math.round((wt[2] + wt[3] + wt[4]) / 60), q = Math.round((wt[3] + wt[4]) / 60);
+    const long = sess && /_long$/.test(sess.kind);
+    if (sess && EASY.has(sess.kind)) verdicts.push(easy >= 80
+      ? {head: L('Лёгкая, как задумано.', 'Easy, as planned.'), text: L(`${long ? `${easy}% времени до ${ht.steady} (Лёгкий и Ровный)` : `${pc(0)}% до ${ht.lt1} — Лёгкий${pc(1) ? `, ${pc(1)}% в Ровном (${ht.lt1 + 1}–${ht.steady}) — нормально` : ''}`}.`, `${long ? `${easy}% of the time under ${ht.steady} (Easy and Steady)` : `${pc(0)}% under ${ht.lt1} — Easy${pc(1) ? `, ${pc(1)}% Steady (${ht.lt1 + 1}–${ht.steady}) — fine` : ''}`}.`), tone: 'good'}
+      : {head: L('Тяжелее задуманного.', 'Harder than planned.'), text: L(`${up} мин выше ${ht.steady} — в Темпе и выше. Лёгкий день лучше держать до ${ht.lt1}, на длинной — до ${ht.steady}.`, `${up} min above ${ht.steady} — Tempo and up. Keep easy days under ${ht.lt1}, long ones under ${ht.steady}.`), tone: 'warn'});
+    else if (sess?.kind === 'bike_q' || sess?.kind === 'run_q') verdicts.push(up >= 15
+      ? {head: L('Качество получилось.', 'Quality landed.'), text: L(`${up} мин в Темпе и выше, из них ${q} — Порог и Тяжёлый.`, `${up} min at Tempo and above, ${q} of them Threshold and Hard.`), tone: 'good'}
+      : {head: L('Качества было мало.', 'Little quality.'), text: L(`Всего ${up} мин выше ${ht.steady}.`, `Only ${up} min above ${ht.steady}.`), tone: 'warn'});
+    else verdicts.push({head: easy >= 80 ? L('В основном легко.', 'Mostly easy.') : q >= 20 ? L('Тяжёлая тренировка.', 'A hard session.') : L('Смешанная интенсивность.', 'Mixed intensity.'),
+      text: L(`Лёгкий ${pc(0)}% · Ровный ${pc(1)}% · Темп ${pc(2)}% · Порог и выше ${q} мин.`, `Easy ${pc(0)}% · Steady ${pc(1)}% · Tempo ${pc(2)}% · Threshold+ ${q} min.`)});
+  } else if (zt > 600) {
     const ez = hrTargets()?.e || 2, easy = z.slice(0, ez).reduce((a, b) => a + b, 0) / zt * 100, hard = z.slice(ez + 1).reduce((a, b) => a + b, 0) / 60, mid = z[ez] / zt * 100;
     const eL = `Z1–Z${ez}`, mL = `Z${ez + 1}`, hL = ez + 2 < 5 ? `Z${ez + 2}–Z5` : "Z5";
     if (sess && EASY.has(sess.kind)) verdicts.push(easy >= 70
@@ -2751,13 +2773,13 @@ async function openActivity(id, plan, sid) {
   if (String(id).startsWith('hk:')) {
     const b = (state.local.acts?.list || []).find(a => a.id === id); if (!b) return;
     const d = {summary: {name: b.name, start: b.start, type: b.type, sport: b.sport, dur: b.min * 60, dist: b.km ? b.km * 1000 : null, up: b.elev || null, hr: b.hr || null, spd: b.km && b.min ? b.km * 1000 / (b.min * 60) : null}, series: null};
-    openSheet(activityHTML(b, d, plan, sid, false) + '', {act: id});
+    openSheet(activityHTML(b, d, plan, sid, false) + '', {act: id, plan, sid});
     return;
   }
   id = Number(id);
   const base = (state.local.acts?.list || []).find(a => a.id === id) || null;
   let d = actCached(id);
-  openSheet(activityHTML(base, d, plan, sid, !d), {act: id});
+  openSheet(activityHTML(base, d, plan, sid, !d), {act: id, plan, sid});
   if (d) return wireCharts(d);
   d = await fn('activity', {id});
   if (sheetCtx?.act !== id) return;
@@ -2765,6 +2787,16 @@ async function openActivity(id, plan, sid) {
   actStore(id, d);
   $('#sheetPanel').innerHTML = activityHTML(base, d, plan, sid, false);
   wireCharts(d);
+}
+async function refreshActivity() {
+  const c = sheetCtx; if (!c?.act) return;
+  const id = c.act;
+  actMem.delete(id); try { localStorage.removeItem('train.act.' + id); } catch {}
+  const btn = document.querySelector('[data-a="act-refresh"]'); if (btn) { btn.disabled = true; btn.textContent = L('Обновляю…', 'Refreshing…'); }
+  await loadActs(true);
+  if (sheetCtx?.act !== id) return;
+  await openActivity(id, c.plan, c.sid);
+  toast(L('Отчёт обновлён', 'Report refreshed'));
 }
 const hms = sec => { sec = Math.round(sec || 0); const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s2 = sec % 60; return h ? `${h}:${pad(m)}:${pad(s2)}` : `${m}:${pad(s2)}`; };
 const fNum = (v, dp = 0) => v == null ? '—' : Number(v).toLocaleString(lang === 'ru' ? 'ru-RU' : 'en-GB', {minimumFractionDigits: dp, maximumFractionDigits: dp});
@@ -2807,7 +2839,7 @@ function activityHTML(base, d, plan, sid, loading, error) {
   const name = S.name || base?.name || L('Тренировка', 'Workout');
   const start = S.start || base?.start || '';
   const when = start ? new Date(start.replace(' ', 'T')).toLocaleString(lang === 'ru' ? 'ru-RU' : 'en-GB', {weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'}) : '';
-  let h = `<div class="sheet-head"><h2>${esc(name)}</h2><button class="nav-btn" data-a="close-sheet">${L('Готово', 'Done')}</button></div><div class="sheet-scroll act" data-sport="${esc(sp)}">`;
+  let h = `<div class="sheet-head"><h2>${esc(name)}</h2><span class="sheet-acts">${loading ? '' : `<button class="nav-btn" data-a="act-refresh" aria-label="${L('Обновить отчёт', 'Refresh the report')}">${L('Обновить', 'Refresh')}</button>`}<button class="nav-btn" data-a="close-sheet">${L('Готово', 'Done')}</button></span></div><div class="sheet-scroll act" data-sport="${esc(sp)}">`;
   h += `<p class="hint">${esc(when)}${plan ? ' · ' + esc(plan) : ''}</p>`;
   const dur = S.dur ?? (base ? base.min * 60 : null), dist = S.dist ?? (base?.km ? base.km * 1000 : null);
   h += `<div class="act-big"><span class="big num">${hms(dur)}</span><span class="hint">${[dist ? fNum(dist / 1000, 1) + L(' км', ' km') : '', (S.up ?? base?.elev) ? '↑ ' + fNum(S.up ?? base.elev) + L(' м', ' m') : '', S.moving && S.dur && S.dur - S.moving > 120 ? L('в движении ', 'moving ') + hms(S.moving) : ''].filter(Boolean).join(' · ')}</span></div>`;
@@ -3165,6 +3197,7 @@ document.addEventListener('click', ev => {
   if (a === 'dismiss') { lastChange = null; render(); return; }
   if (a === 'open') return sessionSheet(el.dataset.id);
   if (a === 'act') return openActivity(el.dataset.id);
+  if (a === 'act-refresh') return refreshActivity();
   if (a === 'day') return daySheet(+el.dataset.i);
   if (a === 'sheet-move') { const s = state.weeks[wk].sessions.find(x => x.id === el.dataset.id); closeSheet(); return runOn(s, `перенеси на ${DAYS_RU[+el.dataset.d]}`, `move to ${DAYS_EN[+el.dataset.d]}`); }
   if (a === 'sheet-min') { const s = state.weeks[wk].sessions.find(x => x.id === el.dataset.id); closeSheet(); return runOn(s, `${DAYS_RU[s.day]} ${el.dataset.m} минут`, `${el.dataset.m} min ${DAYS_EN[s.day]}`); }

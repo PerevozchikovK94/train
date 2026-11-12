@@ -546,3 +546,4 @@ button.pg-week{width:100%;text-align:left;background:none;padding:2px 0;cursor:p
 .hrz-bar.thin{height:20px}
 .hrz-bar.thin i span{font-size:10px}
 .warn-text{color:var(--warn)}
+.sheet-acts{display:flex;gap:4px;align-items:center;flex-shrink:0}
