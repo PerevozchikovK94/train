@@ -2687,9 +2687,65 @@ function wordTimes(ser, t) {
   }
   return out;
 }
+/* ---------- what a workout gives the plan ---------- */
+// One line on how it went, then where it goes: what this kind of session builds for the goal, the week against the
+// outlook, the sport's week, and what it unlocks next (the run cap, rule 69). No AI: the plan's own numbers.
+const PURPOSE = {
+  run_easy: ['аэробная база бега: ноги и сердце привыкают к нагрузке без лишней усталости', 'aerobic run base: legs and heart adapt without extra fatigue'],
+  run_long: ['выносливость на ногах — основа беговой части', 'time on feet — the backbone of your running'],
+  run_q: ['скорость на пороге: держать темп дольше', 'threshold speed: holding pace for longer'],
+  bike_q: ['FTP — мощность на пороге, главный рычаг скорости на веле', 'FTP — threshold power, the main lever of bike speed'],
+  bike_long: ['умение долго ехать ровно и есть на ходу', 'riding long and steady, eating on the move'],
+  bike_easy: ['лёгкий объём и восстановление без ударной нагрузки', 'easy volume and recovery with no impact'],
+  swim: ['техника и экономичность в воде', 'technique and economy in the water'],
+  gym: ['сила и устойчивость к травмам, экономичность бега', 'strength, injury resilience and running economy'],
+  climb: ['сила хвата и верха, разгрузка для ног', 'grip and upper strength, a break for the legs'],
+  hike: ['длинная лёгкая нагрузка — выносливость без бега', 'long easy load — endurance without running'],
+  mobility: ['восстановление — чтобы следующие тренировки были качественными', 'recovery — so the next sessions are good ones'],
+};
+const LEG = {run: ['беговой этап', 'the run leg'], bike: ['велоэтап', 'the bike leg'], swim: ['плавательный этап', 'the swim leg']};
+function sessionFor(id, sid, wk) {
+  if (sid) for (const w of [wk, view.wk]) { const x = state.weeks[w]?.sessions.find(s => s.id === sid); if (x) return x; }
+  for (const w of Object.keys(state.weeks)) { const x = state.weeks[w].sessions.find(s => s.act?.id === id); if (x) return x; }
+  return null;
+}
+function contribution(base, d, sid, an) {
+  const S = d?.summary || {}, start = (S.start || base?.start || '').slice(0, 10); if (!start) return null;
+  const wk = ymd(mondayOf(parseYmd(start))), id = base?.id ?? S.id, sess = sessionFor(id, sid, wk);
+  const sp = sportOfSummary(S) || base?.sport, kind = sess?.kind || {run: 'run_easy', bike: 'bike_easy', swim: 'swim', gym: 'gym', climb: 'climb', hike: 'hike'}[sp];
+  if (!kind || !PURPOSE[kind]) return null;
+  const p = state.plan, v = an?.verdicts?.[0], out = [];
+  // the comment
+  let c;
+  if (!sess) c = L('Сверх плана — засчитана в объём недели.', 'Not in the plan — counted in the week’s volume.');
+  else if (v?.tone === 'warn' && EASY.has(kind)) c = L('Вышло тяжелее задуманного. Разово не страшно — следующую лёгкую держи ниже, иначе копится усталость.', 'Harder than planned. Once is fine — keep the next easy one lower, or fatigue builds.');
+  else if (v?.tone === 'warn') c = L('Качества меньше задуманного — бывает. Не догоняй в следующей: план сам подстроит неделю.', 'Less quality than planned — it happens. Don’t make it up next time; the plan adjusts the week.');
+  else if (EASY.has(kind)) c = L('Сделано как надо: объём в нужном пульсе.', 'Done right: volume at the right heart rate.');
+  else c = L('Ключевая работа недели сделана.', 'The week’s key work is done.');
+  // what it builds, for the goal
+  const pur = L(PURPOSE[kind][0], PURPOSE[kind][1]);
+  if (p?.goal === 'event' && p.eventName) {
+    const left = Math.max(0, weeksFrom(wk, ymd(mondayOf(parseYmd(p.eventDate)))));
+    const leg = p.sports?.includes('swim') && LEG[KINDS[kind].sport] ? ` (${L(LEG[KINDS[kind].sport][0], LEG[KINDS[kind].sport][1])})` : '';
+    out.push(L(`К «${p.eventName}»${leg}: ${pur}. До старта ${left} нед.`, `Towards “${p.eventName}”${leg}: ${pur}. ${left} weeks to go.`));
+  } else out.push(L(`Что строит: ${pur}.`, `What it builds: ${pur}.`));
+  // the week against the outlook
+  const o = outlookWeek(wk), done = actualHours(wk);
+  if (o) out.push(L(`Неделя ${o.week} из ${o.of} (${PHASE[o.phase]?.[0] || ''}): ${fH(done)} из ${fH(o.hours)} — ${Math.round(done / o.hours * 100)}%.`, `Week ${o.week} of ${o.of} (${PHASE[o.phase]?.[1] || ''}): ${fH(done)} of ${fH(o.hours)} — ${Math.round(done / o.hours * 100)}%.`));
+  else if (state.weeks[wk]) { const planned = state.weeks[wk].sessions.filter(s => s.status !== 'dropped').reduce((t, s) => t + (s.act?.min ?? s.min), 0) / 60; if (planned) out.push(L(`Неделя: ${fH(done)} из ${fH(planned)} по плану.`, `Week: ${fH(done)} of ${fH(planned)} planned.`)); }
+  // the sport's week, and what it opens up next
+  const e = ymd(addDays(parseYmd(wk), 7)), same = (state.local.acts?.list || []).filter(a => a.sport === sp && a.start.slice(0, 10) >= wk && a.start.slice(0, 10) < e);
+  if (same.length > 1) out.push(L(`${SPORTS[sp]?.[0] || ''} за неделю: ${same.length} трен., ${fDur(same.reduce((t, a) => t + a.min, 0))}.`, `${SPORTS[sp]?.[1] || ''} this week: ${same.length} sessions, ${fDur(same.reduce((t, a) => t + a.min, 0))}.`));
+  if (sp === 'run') { const lr = longestRun30(); if (lr) out.push(L(`Следующая длинная — до ${Math.round(lr * 1.1)} мин: +10% к самой длинной за 30 дней (правило 69).`, `Next long run — up to ${Math.round(lr * 1.1)} min: +10% on your longest in 30 days (rule 69).`)); }
+  return {c, lines: out};
+}
+function contributionHTML(base, d, sid, an) {
+  const x = contribution(base, d, sid, an); if (!x) return '';
+  return `<div class="section-title">${L('Что это дало плану', 'What it gives the plan')}</div><p class="contrib-c">${esc(x.c)}</p><ul class="plan-why">${x.lines.map(l => `<li>${esc(l)}</li>`).join('')}</ul>`;
+}
 function analyse(d, base, sid) {
   const S = d.summary, sp = sportOfSummary(S), ser = d.series, verdicts = [], best = [];
-  const sess = sid ? state.weeks[view.wk]?.sessions.find(x => x.id === sid) : null;
+  const sess = sessionFor(base?.id ?? S.id, sid, ymd(mondayOf(parseYmd((S.start || base?.start || todayStr()).slice(0, 10)))));
   // 1. intensity, against what was planned when there was a plan
   const ht = hrTargets(), wt = ht && ser?.t && ser?.hr ? wordTimes(ser, ht) : null, wtt = wt ? wt.reduce((a, b) => a + b, 0) : 0;
   const z = base?.hrz, zt = z ? z.reduce((a, b) => a + b, 0) : 0;
@@ -2858,6 +2914,7 @@ function activityHTML(base, d, plan, sid, loading, error) {
   add(L('Температура', 'Temperature'), S.temp != null ? fNum(S.temp) + '°' : null);
   const an = d ? analyse(d, base, sid) : null;
   if (an?.verdicts.length) h += `<ul class="verdicts">${an.verdicts.map(v => `<li class="${v.tone || ''}"><b>${esc(v.head)}</b> ${esc(v.text)}</li>`).join('')}</ul>`;
+  h += contributionHTML(base, d, sid, an);
   if (st.length) h += `<dl class="act-stats">${st.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd class="num">${esc(v)}</dd></div>`).join('')}</dl>`;
   if (an?.best.length) h += `<div class="section-title">${L('Лучшие отрезки', 'Best efforts')}</div>${an.best.some(b => b[0].endsWith('≈')) ? `<p class="hint" style="margin:-4px 0 8px">${L('≈ — оценка по точкам графика', '≈ — estimated from chart samples')}</p>` : ''}<dl class="act-stats best">${an.best.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd class="num">${esc(v)}</dd></div>`).join('')}</dl>`;
   if (an?.cmp) h += an.cmp;
@@ -3387,7 +3444,7 @@ document.addEventListener('input', ev => { if (ev.target.id === 'chatInput') gro
 document.addEventListener('pointerdown', ev => { if (ev.target.closest('.chip')) ev.preventDefault(); });
 
 // Debug hook for local testing (busy/acts injection); harmless in production.
-window.trainDebug = {get state() { return state; }, get cloud() { return cloud; }, push, briefs, hrAuto, thrAuto, ftpAuto, effThr, effFtp, hrWords, trainStatus, breakOf, synced, openChat, chatContext, openWizard, openOnboarding, onb, onbGo, hrTargets, hrText, wiz, rulesPlan, projectOutlook, outlookWeek, buildPlan, applyWeekPlan, makeWeekly, maybeWeekly, weeklyDue, planContext, proposalSheet, view, run, parse, onBusy, matchActs, render, persist, place, setBusy(wk, events) { state.local.busy[wk] = {at: Date.now(), events}; saveLocal(); onBusy(wk); }, setActs(list) { state.local.acts = {at: Date.now(), list, linked: true}; saveLocal(); for (const wk of Object.keys(state.weeks)) { const week = state.weeks[wk], before = snapshot(week), lines = matchActs(wk, week); if (lines.length) commit(wk, week, before, 'Garmin', lines); } render(); }};
+window.trainDebug = {get state() { return state; }, get cloud() { return cloud; }, push, briefs, contribution, hrAuto, thrAuto, ftpAuto, effThr, effFtp, hrWords, trainStatus, breakOf, synced, openChat, chatContext, openWizard, openOnboarding, onb, onbGo, hrTargets, hrText, wiz, rulesPlan, projectOutlook, outlookWeek, buildPlan, applyWeekPlan, makeWeekly, maybeWeekly, weeklyDue, planContext, proposalSheet, view, run, parse, onBusy, matchActs, render, persist, place, setBusy(wk, events) { state.local.busy[wk] = {at: Date.now(), events}; saveLocal(); onBusy(wk); }, setActs(list) { state.local.acts = {at: Date.now(), list, linked: true}; saveLocal(); for (const wk of Object.keys(state.weeks)) { const week = state.weeks[wk], before = snapshot(week), lines = matchActs(wk, week); if (lines.length) commit(wk, week, before, 'Garmin', lines); } render(); }};
 
 // Back from Google's consent screen: #google=ok or #google=<reason>.
 const googleBack = (location.hash.match(/google=([\w-]+)/) || [])[1];
