@@ -804,6 +804,7 @@ function undo(wk) {
 
 /* ---------- cloud (Supabase, shared with the gym app) ---------- */
 const CFG = window.TRAIN_CONFIG || {};
+const APP_VERSION = (document.currentScript?.src.match(/[?&]v=(\d+)/) || [])[1] || '—';
 const cloud = {client: null, user: null, state: 'idle', last: null, timer: null, running: false, cals: null, calBusy: false, gLinked: null};
 function scheduleSync(delay = 1500) { if (!cloud.user) return; clearTimeout(cloud.timer); cloud.timer = setTimeout(sync, delay); }
 async function sync() {
@@ -3080,7 +3081,8 @@ function settingsHTML() {
   if (cloud.me?.ai) { const u = cloud.me.ai; h += `<div class="section-title">${L('Ассистент', 'Assistant')}</div><p class="hint">${u.unlimited ? L('Без ограничений.', 'No limits.') : L(`Сегодня: ${u.chat.used} из ${u.chat.limit} сообщений и ${u.plan.used} из ${u.plan.limit} сборок плана. Обновляется в полночь UTC.`, `Today: ${u.chat.used} of ${u.chat.limit} messages and ${u.plan.used} of ${u.plan.limit} plan builds. Resets at midnight UTC.`)}</p>`; }
   h += invitesHTML();
   h += `<div class="section-title">${L('Язык', 'Language')}</div><div class="seg" role="group"><button data-a="lang" data-l="ru" aria-pressed="${lang === 'ru'}">Русский</button><button data-a="lang" data-l="en" aria-pressed="${lang === 'en'}">English</button></div>
-    <p class="hint" style="padding:24px 0 8px"><a href="privacy.html" style="color:var(--accent)">${L('Конфиденциальность', 'Privacy')}</a></p>`;
+    <p class="hint" style="padding:24px 0 8px"><a href="privacy.html" style="color:var(--accent)">${L('Конфиденциальность', 'Privacy')}</a></p>
+    <p class="hint num" style="padding:0 0 24px">${L('Версия', 'Version')} ${esc(APP_VERSION)}</p>`;
   return h + '</main>';
 }
 /* ---------- morning message (Web Push) ---------- */
