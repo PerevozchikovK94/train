@@ -232,16 +232,18 @@
         <p class="hint tday-bed">${esc(bedtime())}</p></section>`;
     }
     // sleep and stress
-    if (w && (w.sleepMin || w.sleepScore != null)) {
+    // Garmin counts only once nights accumulate (3+ of the last 7): a watch worn just for training shows nothing here
+    if (w && (w.sleepMin || w.sleepScore != null) && (W.source !== 'garmin' || W.enough)) {
       const hv = avg('hrv'), rh = avg('rhr'), dHrv = hv && w.hrv ? Math.round((w.hrv / hv - 1) * 100) : null;
       const low = (w.readiness != null && w.readiness < 70) || (dHrv != null && dHrv <= -15);
-      h += `<section class="card tday-sleep"><div class="tday-eyebrow">${L('Сон', 'Sleep')}${w.bed ? ` · ${hhmm(w.bed)}–${hhmm(w.wake)}` : ''}</div>
+      h += `<section class="card tday-sleep"><div class="tday-eyebrow">${L('Сон', 'Sleep')}${w.bed ? ` · ${hhmm(w.bed)}–${hhmm(w.wake)}` : ''}${W.source === 'garmin' ? ' · Garmin' : ''}</div>
         <div class="tday-big"><b>${w.sleepMin ? durHM(w.sleepMin) : '—'}</b>${w.sleepScore != null ? `<span class="muted">${L('оценка', 'score')} ${w.sleepScore}</span>` : ''}</div>
         <div class="tday-stats">
           ${w.readiness != null ? `<div><span class="muted">${L('Готовность', 'Readiness')}</span><b class="num">${w.readiness}</b></div>` : ''}
           ${w.hrv != null ? `<div><span class="muted">HRV</span><b class="num">${w.hrv}</b>${dHrv != null ? `<span class="${dHrv < -10 ? 'down' : dHrv > 5 ? 'up' : 'muted'}">${dHrv > 0 ? '+' : ''}${dHrv}% ${L('к 2 нед.', 'vs 2 wk')}</span>` : ''}</div>` : ''}
           ${w.rhr != null ? `<div><span class="muted">${L('Пульс покоя', 'Resting HR')}</span><b class="num">${w.rhr}</b>${rh ? `<span class="muted">${L('обычно', 'usually')} ${Math.round(rh)}</span>` : ''}</div>` : ''}
-          ${w.stressMin != null ? `<div><span class="muted">${L('Стресс днём', 'Daytime stress')}</span><b class="num">${fDur(w.stressMin)}</b><span class="muted">${L('восст.', 'recovery')} ${fDur(w.recoveryMin || 0)}</span></div>` : ''}
+          ${w.stressMin != null ? `<div><span class="muted">${L('Стресс днём', 'Daytime stress')}</span><b class="num">${fDur(w.stressMin)}</b>${w.recoveryMin != null ? `<span class="muted">${L('восст.', 'recovery')} ${fDur(w.recoveryMin)}</span>` : ''}</div>` : ''}
+          ${w.bodyBattery != null ? `<div><span class="muted">Body Battery</span><b class="num">${w.bodyBattery}</b><span class="muted">${L('утром', 'at wake')}</span></div>` : ''}
         </div>
         ${low ? `<p class="tday-warn">${L('Восстановление ниже обычного. Если сегодня тяжёлая — можно облегчить: держи пульс в «Лёгком» или сократи на треть.', 'Recovery is below usual. If today is a hard one, ease it: keep HR in Easy or cut it by a third.')}</p>` : ''}</section>`;
     } else if (TrainApp.cloud.me?.oura?.linked) {

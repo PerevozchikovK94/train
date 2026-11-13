@@ -960,12 +960,12 @@ async function connectHealth() {
   return null;
 }
 async function loadWellness(force) {
-  if (!cloud.user || !cloud.me?.oura?.linked) return;
+  if (!cloud.user || !(cloud.me?.oura?.linked || cloud.me?.garmin?.linked)) return; // Oura first, else the Garmin watch
   const w = state.local.wellness;
   if (!force && w && Date.now() - w.at < 30 * 60e3) return;
   const d = await fn('wellness', {from: ymd(addDays(new Date(), -13)), to: todayStr()});
   if (d.error && !d.days) return;
-  state.local.wellness = {at: Date.now(), days: d.days || [], source: d.source || 'oura', error: d.error || null};
+  state.local.wellness = {at: Date.now(), days: d.days || [], source: d.source || 'oura', enough: d.enough !== false, error: d.error || null};
   saveLocal(); render();
 }
 const actsFrom = (from, to) => hkOn() ? hkActivities(from, to) : fn('activities', {from, to});
@@ -2650,7 +2650,7 @@ function alertsHTML(wk) {
   let h = '';
   if (cloud.user && cloud.me && !cloud.me.member) h += `<button class="nudge" data-a="onb-open" data-s="code"><span>${L('Введи инвайт-код — подключим календарь, Garmin и ассистента', 'Enter an invite code to connect calendar, Garmin and the assistant')}</span><span class="nudge-go">${L('Ввести', 'Enter')} ›</span></button>`;
   else if (!cloud.user && cloud.client) h += `<button class="nudge" data-a="onb-open"><span>${L('Войди — подтяну календарь и Garmin', 'Sign in to bring in calendar and Garmin')}</span><span class="nudge-go">${L('Войти', 'Sign in')} ›</span></button>`;
-  else if (cloud.user && cloud.cals && !cloud.cals.length && !(state.local.busy[wk]?.events || []).some(e => e.cal === 'file')) h += `<button class="nudge" data-a="settings"><span>${L('Подключи календарь — план встанет в свободные окна', 'Connect your calendar so the plan fits your free time')}</span><span class="nudge-go">${L('Подключить', 'Connect')} ›</span></button>`;
+  else if (cloud.user && cloud.cals && !cloud.cals.length && !state.prefs.hide?.cal && !(state.local.busy[wk]?.events || []).some(e => e.cal === 'file')) h += `<button class="nudge swipe" data-a="settings" data-hide="cal"><span>${L('Подключи календарь — план встанет в свободные окна', 'Connect your calendar so the plan fits your free time')}</span><span class="nudge-go">${L('Подключить', 'Connect')} ›</span></button>`;
   const ti = todayIdx(wk);
   if (state.health?.track && ti >= 0 && ti <= 6 && !state.checks[todayStr()]) h += `<button class="nudge" data-a="pain-open"><span>${L('Как сегодня? Боль не отмечена', 'How is it today? Pain not logged')}</span><span class="nudge-go">${L('Отметить', 'Log')} ›</span></button>`;
   const g = gate();
@@ -3310,6 +3310,24 @@ async function icsFile(file) {
 }
 
 /* ---------- events ---------- */
+// Swipe a nudge to the left to hide it for good (it stays reachable in Settings). Pointer events: finger and mouse.
+const sw = {el: null, x: 0, dx: 0, moved: false};
+document.addEventListener('pointerdown', ev => { const el = ev.target.closest?.('.swipe'); if (!el) return; sw.el = el; sw.x = ev.clientX; sw.dx = 0; sw.moved = false; });
+document.addEventListener('pointermove', ev => {
+  if (!sw.el) return;
+  sw.dx = Math.min(0, ev.clientX - sw.x);
+  if (sw.dx < -8) { sw.moved = true; sw.el.style.transition = 'none'; sw.el.style.transform = `translateX(${sw.dx}px)`; sw.el.style.opacity = String(Math.max(0.2, 1 + sw.dx / 240)); }
+});
+const swEnd = () => {
+  const el = sw.el; if (!el) return; sw.el = null; el.style.transition = '';
+  if (sw.dx < -90) {
+    el.style.transform = 'translateX(-110%)'; el.style.opacity = '0';
+    state.prefs.hide = {...(state.prefs.hide || {}), [el.dataset.hide]: true}; persist();
+    setTimeout(() => { render(); toast(L('Скрыто. Подключить можно в настройках', 'Hidden. You can connect it in Settings')); }, 200);
+  } else { el.style.transform = ''; el.style.opacity = ''; }
+};
+document.addEventListener('pointerup', swEnd); document.addEventListener('pointercancel', swEnd);
+document.addEventListener('click', ev => { if (sw.moved && ev.target.closest?.('.swipe')) { sw.moved = false; ev.stopPropagation(); ev.preventDefault(); } }, true); // a swipe isn't a tap
 document.addEventListener('click', ev => {
   const olc = ev.target.closest('.ol-col'); if (olc) return olShow(olc);
   const el = ev.target.closest('[data-a]'); if (!el) return;

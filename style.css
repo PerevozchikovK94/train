@@ -551,3 +551,4 @@ button.pg-week{width:100%;text-align:left;background:none;padding:2px 0;cursor:p
 .tester .t span{white-space:normal}.tester-n{display:flex;flex-direction:column;align-items:flex-end;gap:1px;font-size:13px;color:var(--ink-2);flex:none}
 
 .nav-btn:disabled{opacity:.3;cursor:default}
+.nudge.swipe{touch-action:pan-y;transition:transform .2s,opacity .2s;user-select:none}
