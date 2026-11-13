@@ -171,6 +171,34 @@
   // ---------- «Сегодня»: sleep, the day's plan, food; after 21:00 by the phone's clock, the day's result ----------
   const hhmm = iso => iso ? new Date(iso).toLocaleTimeString(L('ru-RU', 'en-GB'), {hour: '2-digit', minute: '2-digit'}) : '';
   const durHM = min => `${Math.floor(min / 60)} ${L('ч', 'h')} ${String(min % 60).padStart(2, '0')} ${L('мин', 'min')}`;
+  // A short AI note on the day: in the morning about the plan, after 21:00 about how it went. Made once per day and kind
+  // (kept with the food data, so it syncs), regenerated on ↻. No sleep data goes into it.
+  const aiBusy = new Set(), aiTried = new Set();
+  function dayCtx(kind, date, ss, T, E, supps, d, next) {
+    const p = TrainApp.state.plan, hm3 = m => m == null ? null : `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+    const ses = x => ({name: kName(x.kind), min: x.status === 'done' ? (x.act?.min ?? x.min) : x.min, start: hm3(x.start), status: x.status, how: x.detail ? (TrainApp.hrText ? TrainApp.hrText(x.detail) : x.detail) : null});
+    return {kind, date, weekday: parseYmd(date).toLocaleDateString('ru-RU', {weekday: 'long'}),
+      goal: p ? {goal: p.goal, event: p.eventName || null, date: p.eventDate || null} : null,
+      sessions: ss.filter(x => x.status !== 'dropped').map(ses), tomorrow: next ? ses(next) : null,
+      food: T ? {kcal: [Math.round(E.kcal), T.kcal], protein: [Math.round(E.p), T.p], carbs: [Math.round(E.c), T.c], fat: [Math.round(E.f), T.f], meals: (d.m || []).map(m => m.name).slice(0, 12)} : null,
+      supplements: supps.length ? {done: supps.filter(x => d.s?.[x.id]).map(x => x.name), missing: supps.filter(x => !d.s?.[x.id]).map(x => x.name)} : null};
+  }
+  async function aiDay(kind, ctx) {
+    const key = ctx.date + ':' + kind;
+    if (aiBusy.has(key) || !cloud.client || !cloud.user) return;
+    aiBusy.add(key); aiTried.add(key); render();
+    try {
+      const {data, error} = await cloud.client.functions.invoke('train-food', {body: {kind, ctx}});
+      if (!error && data?.text) { F.ai = F.ai || {}; F.ai[key] = {text: data.text, at: Date.now()}; save(); }
+    } finally { aiBusy.delete(key); render(); }
+  }
+  function aiNote(kind, ctx) {
+    const key = ctx.date + ':' + kind, got = F.ai?.[key];
+    if (!got && !aiTried.has(key)) { aiTried.add(key); setTimeout(() => aiDay(kind, ctx)); } // once, even if the screen redraws before the call starts
+    if (!got) return aiBusy.has(key) ? `<p class="tday-ai muted">${L('Пишу короткий разбор…', 'Writing a short note…')}</p>` : '';
+    return `<p class="tday-ai">${esc(got.text)} <button class="tday-ai-r" data-a="food-ai" data-k="${kind}" aria-label="${L('Обновить', 'Refresh')}">↻</button></p>`;
+  }
+  let lastCtx = {};
   function todayScreen() {
     const date = todayStr(), now = new Date(), evening = now.getHours() >= 21;
     const ss = sessionsOn(date), T = targets(ss), d = F.log[date] || {s: {}, p: [], m: []}, E = eaten(d);
@@ -203,7 +231,8 @@
       if (supps.length) rows.push([L('Добавки', 'Supplements'), `${suppDone}/${supps.length}`, suppDone === supps.length]);
       const ok = rows.filter(r => r[2]).length, miss = rows.filter(r => !r[2]).map(r => r[0].toLowerCase());
       const verdict = ok === rows.length ? L('Хороший день: всё по плану.', 'A good day: all on plan.') : L(`Добрать завтра: ${miss.join(', ')}.`, `To catch up tomorrow: ${miss.join(', ')}.`);
-      h += `<section class="card tday-res"><div class="tday-eyebrow">${L('Итог дня', 'Day result')}</div><b class="tday-verdict">${esc(verdict)}</b>
+      const ectx = lastCtx.evening = dayCtx('evening', date, ss, T, E, supps, d, next);
+      h += `<section class="card tday-res"><div class="tday-eyebrow">${L('Итог дня', 'Day result')}</div><b class="tday-verdict">${esc(verdict)}</b>${aiNote('evening', ectx)}
         <div class="list">${rows.map(([n, v, good]) => `<div class="row"><span class="t"><b>${esc(n)}</b></span><span class="v"><b class="num">${esc(v)}</b></span><span class="tday-mark ${good ? 'ok' : 'miss'}" aria-label="${good ? L('в норме', 'on target') : L('ниже плана', 'below plan')}">${good ? '✓' : '·'}</span></div>`).join('')}</div>
         <p class="hint tday-bed">${esc(bedtime())}</p></section>`;
     }
@@ -227,6 +256,7 @@
     }
     // the day's plan
     h += `<section class="card tday-plan"><div class="tday-eyebrow">${L('План', 'Plan')}</div>`;
+    if (!evening) { const mctx = lastCtx.morning = dayCtx('morning', date, ss, T, E, supps, d, next); h += aiNote('morning', mctx); }
     if (planned.length) h += `<div class="list">${planned.sort((a, b) => (a.start ?? 1e4) - (b.start ?? 1e4)).map(x => `<div class="row"><span class="t"><b><span class="dot ${KINDS[x.kind].sport}"></span> ${esc(kName(x.kind))}</b>${x.detail ? `<span>${esc(TrainApp.hrText ? TrainApp.hrText(x.detail) : x.detail)}</span>` : ''}</span><span class="v num"><b>${x.status === 'done' ? '✓' : x.start != null ? `${String(Math.floor(x.start / 60)).padStart(2, '0')}:${String(x.start % 60).padStart(2, '0')}` : ''}</b><span>${fDur(x.status === 'done' ? (x.act?.min ?? x.min) : x.min)}</span></span></div>`).join('')}</div>`;
     else h += `<p class="hint">${L('День отдыха.', 'Rest day.')}${next ? ' ' + L(`Завтра — ${kName(next.kind).toLowerCase()}.`, `Tomorrow: ${kName(next.kind).toLowerCase()}.`) : ''}</p>`;
     h += `<button class="btn link" data-a="food-tab" data-v="week">${L('Открыть неделю', 'Open the week')} ›</button></section>`;
@@ -342,6 +372,7 @@
     if (a === 'food-period') { period = +el.dataset.p; pick = null; render(); return true; }
     if (a === 'food-pick') { pick = pick === el.dataset.k ? null : el.dataset.k; render(); return true; }
     if (a === 'food-day') { const n = ymd(addDays(parseYmd(curDay()), +el.dataset.d)); vd = n >= todayStr() ? null : n; render(); return true; }
+    if (a === 'food-ai') { const c = lastCtx[el.dataset.k]; if (c) { delete F.ai?.[c.date + ':' + el.dataset.k]; aiDay(el.dataset.k, c); } return true; }
     if (a === 'food-rep') {
       const m = frequent(8)[+el.dataset.i]; if (!m) return true;
       const date = curDay();
@@ -428,6 +459,7 @@
 .tday-stats b{font-size:20px}.tday-stats .up{color:var(--accent)}.tday-stats .down{color:var(--warn)}
 .tday-warn{margin:12px 0 0;font-size:14px;color:var(--warn)}.tday-plan .btn.link,.tday-food .btn.link{margin-top:6px;justify-content:flex-start;padding-left:0}
 .tday-later{text-align:center;margin:16px 0}
+.tday-ai{font-size:15px;line-height:1.45;margin:0 0 10px;color:var(--ink-2)}.tday-ai-r{color:var(--muted);font-size:14px;padding:0 4px;min-height:0}
 .kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:4px}
 .kpi{background:var(--fill);border-radius:14px;padding:12px;display:flex;flex-direction:column;gap:2px;font-size:12px;min-width:0}
 .kpi b{font-size:24px;line-height:1.2}
