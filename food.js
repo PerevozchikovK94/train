@@ -199,6 +199,23 @@
       <div class="kpi"><span class="muted">${L('Тренировки', 'Training')}</span><b>${TrainApp.fHours(totMin / dWeek)}</b><span class="muted">${L('в неделю', 'a week')}${delta != null ? ` · <span class="${delta >= 0 ? 'up' : 'down'}">${delta >= 0 ? '+' : ''}${delta}%</span>` : ''}</span></div>
       <div class="kpi"><span class="muted">${L('Калории', 'Calories')}</span><b>${dayRows.length ? Math.round(avg(dayRows, r => r.ea.kcal) / Math.max(1, avg(dayRows, r => r.tg?.kcal || 0)) * 100) + '%' : '—'}</b><span class="muted">${L('нормы в среднем', 'of target, avg')}</span></div>
       <div class="kpi"><span class="muted">${L('Белок', 'Protein')}</span><b>${dayRows.length ? `${protHit}/${dayRows.length}` : '—'}</b><span class="muted">${L('дней в норме', 'days on target')}</span></div></div>`;
+    // load growth: hours per week for 8 weeks against the ceiling of rule 71 (+20% on the 4 weeks before; C, convention)
+    {
+      const mon = mondayOf(parseYmd(todayStr())), W = [];
+      for (let i = 7; i >= 0; i--) { const a = ymd(addDays(mon, -7 * i)), b = ymd(addDays(mon, -7 * i + 6)); W.push({a, h: acts.filter(x => { const d = x.start.slice(0, 10); return d >= a && d <= b; }).reduce((t, x) => t + x.min, 0) / 60}); }
+      const prev = W.slice(3, 7).map(w => w.h), base = prev.reduce((a, b) => a + b, 0) / 4, cur = W[7].h, ceil = base * 1.2;
+      const lx = Math.max(1, ...W.map(w => w.h), ceil) * 1.12, pct = base ? Math.round((cur / base - 1) * 100) : null;
+      const verdict = !base ? L('Мало истории за прошлые 4 недели — сравнивать не с чем.', 'Too little history in the last 4 weeks to compare.')
+        : cur > ceil ? L(`Эта неделя: ${pct > 0 ? '+' : ''}${pct}% к среднему за 4 недели — выше правила (+10–20%). Риск перегрузки растёт.`, `This week: ${pct > 0 ? '+' : ''}${pct}% on the 4-week average — above the rule (+10–20%). Overload risk goes up.`)
+        : pct < -30 ? L(`Эта неделя: ${pct}% к среднему за 4 недели (неделя ещё идёт). Возвращаясь, добавляй не больше 10–20% в неделю.`, `This week: ${pct}% on the 4-week average (the week isn’t over). Coming back, add no more than 10–20% a week.`)
+        : L(`Эта неделя: ${pct > 0 ? '+' : ''}${pct}% к среднему за 4 недели — в пределах правила.`, `This week: ${pct > 0 ? '+' : ''}${pct}% on the 4-week average — within the rule.`);
+      h += `<section class="card chart"><div class="chart-h"><b>${L('Рост нагрузки', 'Load growth')}</b><span class="muted">${L('часы в неделю · 8 недель', 'hours a week · 8 weeks')}</span></div>
+        <div class="legend"><span><i style="background:var(--accent)"></i>${L('Часы', 'Hours')}</span><span><i class="tick"></i>${L('Потолок: +20% к 4 неделям', 'Ceiling: +20% on 4 weeks')}</span></div>
+        <div class="bars" style="--n:8">${W.map((w, i) => `<div class="bcol"><span class="bone${i === 7 && base && w.h > ceil ? ' over' : ''}" style="height:${(w.h / lx * 100).toFixed(1)}%;${i < 7 ? 'opacity:.55' : ''}"></span>${i === 7 && base ? `<span class="btick" style="bottom:${(ceil / lx * 100).toFixed(1)}%"></span>` : ''}</div>`).join('')}</div>
+        <div class="xax" style="--n:8">${W.map(w => `<span>${parseYmd(w.a).getDate()}</span>`).join('')}</div>
+        <p class="readout">${verdict}</p>
+        <details class="tview"><summary>${L('Таблицей', 'As a table')}</summary><table><tr><th>${L('Неделя с', 'Week of')}</th><th>${L('Часы', 'Hours')}</th></tr>${W.map(w => `<tr><td>${esc(parseYmd(w.a).toLocaleDateString(L('ru-RU', 'en-GB'), {day: 'numeric', month: 'short'}))}</td><td>${w.h.toFixed(1)}</td></tr>`).join('')}</table></details></section>`;
+    }
     // training volume, stacked by sport
     const mx = Math.max(1, ...sport.map(o => Object.values(o).reduce((a, b) => a + b, 0)));
     h += `<section class="card chart"><div class="chart-h"><b>${L('Объём тренировок', 'Training volume')}</b><span class="muted">${period <= 30 ? L('минуты в день', 'minutes a day') : L('часы в неделю', 'hours a week')}</span></div>
@@ -253,6 +270,13 @@
     if (a === 'food-period') { period = +el.dataset.p; pick = null; render(); return true; }
     if (a === 'food-pick') { pick = pick === el.dataset.k ? null : el.dataset.k; render(); return true; }
     if (a === 'food-day') { const n = ymd(addDays(parseYmd(curDay()), +el.dataset.d)); vd = n >= todayStr() ? null : n; render(); return true; }
+    if (a === 'food-rep') {
+      const m = frequent(8)[+el.dataset.i]; if (!m) return true;
+      const date = curDay();
+      day(date).m.push({...m, at: date === todayStr() ? Date.now() : parseYmd(date).getTime() + 13 * 3600e3, src: 'repeat'});
+      fabOpen = false; fabRender(); save();
+      toast(L(`+${m.kcal} ккал · ${m.name}`, `+${m.kcal} kcal · ${m.name}`)); return true;
+    }
     if (a === 'food-fab') { fabOpen = !fabOpen; fabRender(); if (fabOpen) setTimeout(() => $('#foodTextIn')?.focus(), 50); return true; }
     if (a === 'food-m-del') { day(curDay()).m.splice(+el.dataset.i, 1); save(); return true; }
     if (a === 'food-s-del') { F.supps.splice(+el.dataset.i, 1); save(); return true; }
@@ -368,6 +392,7 @@
 .supp .muted{font-size:12px}
 .supp-ck{width:24px;height:24px;border-radius:50%;border:2px solid var(--line);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;flex:none}
 .supp[aria-pressed="true"] .supp-ck{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.rep-h{font-size:13px}.rep{display:flex;flex-wrap:wrap;gap:6px;max-height:132px;overflow:auto}.rep .chip{min-height:34px;padding:6px 12px;font-size:14px}.rep .chip .muted{font-size:12px}
 .food-text{display:flex;gap:6px}
 .food-text input{flex:1;min-width:0}
 .food-text .btn{width:auto;padding:0 16px}`;
@@ -377,10 +402,36 @@
   fab.className = 'food-fab'; fab.hidden = true;
   document.body.appendChild(fab);
   let fabOpen = false;
+  // The meals eaten most often over 30 days (by name), most recent copy of each — for «Повторить».
+  // In a workout's report: carbs eaten in the 3 h before it and during it, against the fuel rules
+  // (106: 30–60 g an hour from ~75 min, up to 90 past 2.5 h; a carb meal 2–3 h before). Only meals with a time count.
+  function workoutFuel(S, base) {
+    if (!on()) return '';
+    const startS = String(S?.start || base?.start || ''); if (!startS) return '';
+    const t0 = new Date(startS.replace(' ', 'T')).getTime(), dur = (S?.dur || (base?.min || 0) * 60) * 1000; if (!t0 || !dur) return '';
+    const date = startS.slice(0, 10), meals = [...(F.log[date]?.m || []), ...(F.log[ymd(addDays(parseYmd(date), -1))]?.m || [])];
+    const before = meals.filter(m => m.at >= t0 - 3 * 3600e3 && m.at < t0), during = meals.filter(m => m.at >= t0 && m.at <= t0 + dur);
+    const cb = before.reduce((a, m) => a + (m.c || 0), 0), cd = during.reduce((a, m) => a + (m.c || 0), 0), min = dur / 6e4;
+    if (min < 60 && !before.length && !during.length) return '';
+    const hi = min >= 150 ? 90 : 60, h = Math.max(0, min / 60 - 0.5), need = min >= 75 ? [Math.round(30 * h / 5) * 5, Math.round(hi * h / 5) * 5] : null;
+    const lines = [L(`До (за 3 ч): ${before.length ? `${fmt(cb)} г углеводов — ${esc(before.map(m => m.name).join(', ').slice(0, 60))}` : 'ничего не записано'}`, `Before (3 h): ${before.length ? `${fmt(cb)} g carbs — ${esc(before.map(m => m.name).join(', ').slice(0, 60))}` : 'nothing logged'}`)];
+    if (need) lines.push(L(`Во время: ${fmt(cd)} г из нужных ${need[0]}–${need[1]} г${cd < need[0] ? ' — мало, на длинных это бьёт по второй половине' : ''}`, `During: ${fmt(cd)} g of the ${need[0]}–${need[1]} g needed${cd < need[0] ? ' — too little; on long ones that costs the second half' : ''}`));
+    else if (during.length) lines.push(L(`Во время: ${fmt(cd)} г углеводов`, `During: ${fmt(cd)} g carbs`));
+    return `<div class="section-title">${L('Питание вокруг тренировки', 'Fuel around it')}</div><ul class="plan-why">${lines.map(l => `<li>${l}</li>`).join('')}</ul>`;
+  }
+  function frequent(n) {
+    const since = ymd(addDays(parseYmd(todayStr()), -30)), by = new Map();
+    for (const [d, day] of Object.entries(F.log)) if (d >= since) for (const m of day.m || []) {
+      const k = m.name.toLowerCase(), c = by.get(k);
+      if (!c) by.set(k, {m, n: 1}); else { c.n++; if (m.at > c.m.at) c.m = m; }
+    }
+    return [...by.values()].sort((a, b) => b.n - a.n || b.m.at - a.m.at).slice(0, n).map(x => x.m);
+  }
   function fabRender() {
     fab.hidden = !on() || !!document.querySelector('.settings') || TrainApp.view.v === 'stats';
     fab.classList.toggle('low', !!$('#cmd')?.hidden);
-    fab.innerHTML = fabOpen ? `<div class="food-fab-panel"><label class="btn primary">${L('Сфоткать', 'Take a photo')}<input type="file" accept="image/*" capture="environment" data-food="photo" hidden></label>
+    const rep = fabOpen ? frequent(8) : [];
+    fab.innerHTML = fabOpen ? `<div class="food-fab-panel">${rep.length ? `<div class="rep-h muted">${L('Повторить', 'Again')}</div><div class="rep">${rep.map((m, i) => `<button class="chip" data-a="food-rep" data-i="${i}">${esc(m.name.length > 28 ? m.name.slice(0, 27) + '…' : m.name)} <span class="muted num">${fmt(m.kcal)}</span></button>`).join('')}</div>` : ''}<label class="btn primary">${L('Сфоткать', 'Take a photo')}<input type="file" accept="image/*" capture="environment" data-food="photo" hidden></label>
       <form id="foodText" class="food-text"><input id="foodTextIn" placeholder="${L('или опиши: творог 200 г', 'or describe: 200 g cottage cheese')}" maxlength="300"><button class="btn quiet" type="submit">OK</button></form></div>
       <button class="food-fab-btn" data-a="food-fab" aria-label="${L('Закрыть', 'Close')}">✕</button>`
       : `<button class="food-fab-btn" data-a="food-fab">${busy.on ? L('Считаю…', 'Estimating…') : L('+ Еда', '+ Meal')}</button>`;
@@ -392,6 +443,6 @@
     if (on() !== wasOn) { wasOn = on(); render(); }
     const want = on() && !document.querySelector('.settings') && TrainApp.view.v !== 'stats'; if (fab.hidden === want) fabRender();
   }, 400);
-  window.TrainFood = {weekRow, screen, tabs, settings, briefLine, click, change, fabRender, get data() { return F; }};
+  window.TrainFood = {weekRow, screen, tabs, settings, workoutFuel, briefLine, click, change, fabRender, get data() { return F; }};
   render();
 })();

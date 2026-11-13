@@ -2966,6 +2966,7 @@ function activityHTML(base, d, plan, sid, loading, error) {
   const an = d ? analyse(d, base, sid) : null;
   if (an?.verdicts.length) h += `<ul class="verdicts">${an.verdicts.map(v => `<li class="${v.tone || ''}"><b>${esc(v.head)}</b> ${esc(v.text)}</li>`).join('')}</ul>`;
   h += contributionHTML(base, d, sid, an);
+  h += window.TrainFood?.workoutFuel(d?.summary, base) || '';
   if (st.length) h += `<dl class="act-stats">${st.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd class="num">${esc(v)}</dd></div>`).join('')}</dl>`;
   if (an?.best.length) h += `<div class="section-title">${L('Лучшие отрезки', 'Best efforts')}</div>${an.best.some(b => b[0].endsWith('≈')) ? `<p class="hint" style="margin:-4px 0 8px">${L('≈ — оценка по точкам графика', '≈ — estimated from chart samples')}</p>` : ''}<dl class="act-stats best">${an.best.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd class="num">${esc(v)}</dd></div>`).join('')}</dl>`;
   if (an?.cmp) h += an.cmp;
