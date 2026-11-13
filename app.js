@@ -804,6 +804,16 @@ function undo(wk) {
 
 /* ---------- cloud (Supabase, shared with the gym app) ---------- */
 const CFG = window.TRAIN_CONFIG || {};
+const errSent = {n: 0, seen: new Set()};
+function reportError(msg, stack) { try { reportErrorNow(msg, stack); } catch { /* too early in startup: nothing to send with yet */ } }
+function reportErrorNow(msg, stack) {
+  const key = String(msg).slice(0, 120);
+  if (errSent.n >= 5 || errSent.seen.has(key) || !cloud?.client || !cloud.user) return;
+  errSent.n++; errSent.seen.add(key);
+  cloud.client.from('training_errors').insert({user_id: cloud.user.id, version: APP_VERSION, view: view?.v || '', msg: String(msg).slice(0, 500), stack: String(stack || '').slice(0, 2000), ua: navigator.userAgent.slice(0, 200)}).then(() => {}, () => {});
+}
+window.addEventListener('error', e => reportError(e.message, e.error?.stack));
+window.addEventListener('unhandledrejection', e => reportError(e.reason?.message || e.reason, e.reason?.stack));
 const APP_VERSION = (document.currentScript?.src.match(/[?&]v=(\d+)/) || [])[1] || '—';
 const cloud = {client: null, user: null, state: 'idle', last: null, timer: null, running: false, cals: null, calBusy: false, gLinked: null};
 function scheduleSync(delay = 1500) { if (!cloud.user) return; clearTimeout(cloud.timer); cloud.timer = setTimeout(sync, delay); }
@@ -953,6 +963,7 @@ function afterSignIn() {
   cloud.ready = Promise.all([sync(), fn('me').then(d => { cloud.me = d.error ? null : d; })]);
   return cloud.signP = (async () => {
     await cloud.ready;
+    markSeen();
     if (cloud.me && !cloud.me.member) { cloud.ai = false; render(); return; }
     const st = await fn('cal-status'); if (!st.error) { cloud.cals = st.calendars; cloud.google = st.google; }
     render();
@@ -2369,6 +2380,30 @@ async function loadInvites(create) {
   if (view.v === 'settings') render();
 }
 const inviteLink = code => `${location.origin}${location.pathname}?invite=${encodeURIComponent(code)}`;
+// The days the app was opened (last 60), so the admin can see who keeps using it.
+function markSeen() {
+  const d = todayStr(), days = state.seen?.days || [];
+  if (!days.includes(d)) { state.seen = {days: [...days, d].slice(-60)}; persist(); }
+}
+// Admin: how each tester is doing — opens, sessions done, plan moves, errors.
+const testers = {list: null, busy: false};
+async function loadTesters() {
+  if (testers.busy) return;
+  testers.busy = true;
+  const d = await fn('members-stats');
+  testers.busy = false;
+  if (!d.error) testers.list = d.members;
+  if (view.v === 'settings') render();
+}
+function testersHTML() {
+  if (!cloud.me?.admin) return '';
+  if (!testers.list && !testers.busy) setTimeout(loadTesters);
+  const list = testers.list || [];
+  const ago = d => { if (!d) return L('не заходил', 'never'); const n = Math.round((parseYmd(todayStr()) - parseYmd(d)) / 864e5); return n <= 0 ? L('сегодня', 'today') : n === 1 ? L('вчера', 'yesterday') : L(`${n} дн. назад`, `${n} days ago`); };
+  return `<div class="section-title">${L('Тестеры', 'Testers')} <span class="muted num" style="text-transform:none">· ${list.length}</span></div>
+    <p class="hint" style="padding-bottom:8px">${L('За 7 дней: дни с приложением, сделанные тренировки, переносы плана, ошибки на телефоне.', 'Last 7 days: days with the app, sessions done, plan moves, errors on the phone.')}</p>
+    ${list.length ? `<div class="list">${list.map(m => `<div class="row tester"><span class="t"><b>${esc(m.email || m.id.slice(0, 8))}${m.admin ? L(' · ты', ' · you') : ''}</b><span>${ago(m.last)} · ${m.plan ? esc(m.plan.name || L(GOALS[m.plan.goal]?.[0] || m.plan.goal, GOALS[m.plan.goal]?.[1] || m.plan.goal)) : L('без плана', 'no plan')}${m.garmin ? ' · Garmin' : ''}${m.health ? ' · Health' : ''}</span></span><span class="tester-n num"><span title="${L('дней с приложением', 'days with the app')}">${m.days7}/7</span><span title="${L('тренировок', 'sessions')}">${m.done7} ${L('трен.', 'sess.')}</span><span>${m.moves7} ${L('перен.', 'moves')}</span>${m.errors7 ? `<span class="warn-text">${m.errors7} ${L('ош.', 'err.')}</span>` : ''}</span></div>`).join('')}</div>` : `<p class="hint">${testers.busy ? L('Загружаю…', 'Loading…') : L('Пока никого', 'No one yet')}</p>`}`;
+}
 function invitesHTML() {
   if (!cloud.me?.admin) return '';
   if (!invites.list && !invites.busy) setTimeout(() => loadInvites(false));
@@ -3091,6 +3126,7 @@ function settingsHTML() {
   // The assistant's allowance, invites (admins), language and privacy
   if (cloud.me?.ai) { const u = cloud.me.ai; h += `<div class="section-title">${L('Ассистент', 'Assistant')}</div><p class="hint">${u.unlimited ? L('Без ограничений.', 'No limits.') : L(`Сегодня: ${u.chat.used} из ${u.chat.limit} сообщений и ${u.plan.used} из ${u.plan.limit} сборок плана. Обновляется в полночь UTC.`, `Today: ${u.chat.used} of ${u.chat.limit} messages and ${u.plan.used} of ${u.plan.limit} plan builds. Resets at midnight UTC.`)}</p>`; }
   h += invitesHTML();
+  h += testersHTML();
   h += `<div class="section-title">${L('Язык', 'Language')}</div><div class="seg" role="group"><button data-a="lang" data-l="ru" aria-pressed="${lang === 'ru'}">Русский</button><button data-a="lang" data-l="en" aria-pressed="${lang === 'en'}">English</button></div>
     <p class="hint" style="padding:24px 0 8px"><a href="privacy.html" style="color:var(--accent)">${L('Конфиденциальность', 'Privacy')}</a></p>
     <p class="hint num" style="padding:0 0 24px">${L('Версия', 'Version')} ${esc(APP_VERSION)}</p>`;
