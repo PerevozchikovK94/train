@@ -46,7 +46,7 @@
     const date = curDay(); // the day on screen now, even if another is open when the answer comes
     busy.on = true; fabOpen = false; fabRender(); render();
     try {
-      const {data, error} = await cloud.client.functions.invoke('train-food', {body});
+      const {data, error} = await cloud.client.functions.invoke('train-food', {body: {...body, lang: TrainApp.lang()}});
       let err = null; if (error) { try { err = (await error.context?.json?.())?.error; } catch {} err = err || 'unavailable'; }
       if (err || !data?.items) { toast(err === 'limit' ? L('Лимит ассистента на сегодня исчерпан', 'Today’s assistant limit is used up') : L('Не получилось посчитать — попробуй ещё раз', 'Couldn’t estimate — try again')); return; }
       if (!data.items.length) { toast(data.comment || L('Не похоже на еду', 'Doesn’t look like food')); return; }
@@ -183,7 +183,7 @@
     if (aiBusy.has(key) || !cloud.client || !cloud.user) return;
     aiBusy.add(key); aiTried.add(key); render();
     try {
-      const {data, error} = await cloud.client.functions.invoke('train-food', {body: {kind, ctx}});
+      const {data, error} = await cloud.client.functions.invoke('train-food', {body: {kind, ctx, lang: TrainApp.lang()}});
       if (!error && data?.text) { F.ai = F.ai || {}; F.ai[key] = {text: data.text, at: Date.now()}; save(); }
     } finally { aiBusy.delete(key); render(); }
   }

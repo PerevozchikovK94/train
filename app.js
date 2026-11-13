@@ -102,7 +102,15 @@ function load() {
 }
 // Fields that came after launch. The first account had injury tracking built in (pain checks and its run rule),
 // so an existing document with pain checks keeps it; an existing plan means onboarding is behind it.
+// The language is one setting for the account (prefs.lang, synced), so every device, the morning message and the
+// assistant's texts follow it. Until it's chosen once in Settings, a device keeps its own choice or the phone's language.
+function adoptLang(d) {
+  let mine = null; try { mine = localStorage.getItem('train.lang'); } catch {}
+  if (d.prefs && !d.prefs.lang && mine) d.prefs.lang = mine;
+  if (d.prefs?.lang && d.prefs.lang !== lang) { lang = d.prefs.lang; try { localStorage.setItem('train.lang', lang); } catch {} }
+}
 function fill(d) {
+  adoptLang(d);
   if (!d.health) d.health = Object.keys(d.checks || {}).length ? {track: true, note: '', rule: 'бег только после 48 ч на 0/10, включая сидение; вел — если сидя 0/10'} : {track: false};
   if (!d.onboard && (Object.keys(d.weeks || {}).length || d.plan)) d.onboard = {done: true, at: null};
   if (d.zones && !d.zones.v2) { const hr = {...(d.zones.hr || {})}; delete hr.easy; d.zones = {...d.zones, hr, v2: true, mode: 'auto'}; delete d.zones.seen; }
@@ -1298,12 +1306,17 @@ function chatHistory() {
   return out.slice(-20);
 }
 // One call to train-chat: POST, then read its event stream. Throws on HTTP errors; stream events go to onEvent.
+const APP_LANG_NOTE = {
+  ru: 'Язык приложения: русский. Все тексты для пользователя — по-русски, термины на английском.',
+  en: 'App language: English. Write every text the person reads in English — the reply, summary, review, rationale, session details, the outlook headline and expect — same style and terms (Z2, FTP). Commands inside propose_plan_changes keep the exact Russian form from the instructions: the app parses them.',
+};
 async function aiStream(body, signal, onEvent) {
   const {data} = await cloud.client.auth.getSession();
   const res = await fetch(`${CFG.supabaseUrl}/functions/v1/train-chat`, {
     method: 'POST', signal,
     headers: {'Content-Type': 'application/json', apikey: CFG.supabaseKey, Authorization: `Bearer ${data.session?.access_token || ''}`},
-    body: JSON.stringify(body),
+    // The assistant writes in the app's language: the note rides in the context message it already reads.
+    body: JSON.stringify({...body, lang, context: {...(body.context || {}), app_language: APP_LANG_NOTE[lang] || APP_LANG_NOTE.ru}}),
   });
   if (!res.ok) { let b = null; try { b = await res.json(); } catch {} throw new Error(b?.error || (res.status === 401 ? 'unauthorized' : 'failed')); }
   const reader = res.body.getReader(), dec = new TextDecoder();
@@ -3613,7 +3626,13 @@ document.addEventListener('click', ev => {
     if (el.dataset.yes) { const ds = el.dataset.days.split(',').map(Number), a1 = ds[0], b1 = ds[ds.length - 1]; return run(a1 === b1 ? L(`уезжаю ${DAYS_RU[a1]}`, `away ${DAYS_EN[a1]}`) : L(`уезжаю ${DAYS_RU[a1]} по ${DAYS_RU[b1]}`, `away ${DAYS_EN[a1]} to ${DAYS_EN[b1]}`)); }
     persist(); render(); return;
   }
-  if (a === 'lang') { lang = el.dataset.l; try { localStorage.setItem('train.lang', lang); } catch {} render(); return; }
+  if (a === 'lang') {
+    lang = el.dataset.l; try { localStorage.setItem('train.lang', lang); } catch {}
+    state.prefs.lang = lang; persist(); render();
+    // the morning message follows the new language too
+    if (push.on) pushSub().then(sub => sub && pushCall('save', {sub: sub.toJSON(), tz: Intl.DateTimeFormat().resolvedOptions().timeZone, at: push.at || '07:30', lang})).catch(() => {});
+    return;
+  }
   if (a === 'sign-out') { cloud.client.auth.signOut(); cloud.user = null; cloud.cals = null; cloud.ai = false; cloud.me = null; cloud.signedFor = null; cloud.signP = null; invites.list = null; render(); return; }
   if (a === 'onb-open') return openOnboarding(el.dataset.s);
   if (a === 'onb-go') return onbGo(el.dataset.s);
