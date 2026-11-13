@@ -417,7 +417,7 @@ function rpeSheet(id) {
 }
 
 function newSession(t) {
-  return {id: rid(), tid: t.id, kind: t.kind, min: t.min, pref: t.day, tod: t.tod, anchor: !!t.anchor, note: t.note || '', day: null, start: null, status: 'planned', why: '', ...(t.detail ? {detail: t.detail} : {}), ...(t.key ? {key: true} : {})};
+  return {id: rid(), tid: t.id, kind: t.kind, min: t.min, pref: t.day, tod: t.tod, anchor: !!t.anchor, note: t.note || '', day: null, start: null, status: 'planned', why: '', ...(t.detail ? {detail: t.detail} : {}), ...(t.rule ? {rule: t.rule, ...(t.block != null ? {block: t.block} : {})} : {}), ...(t.key ? {key: true} : {})};
 }
 function templateFor() {
   const out = [], seen = {};
@@ -429,12 +429,67 @@ function templateFor() {
   }
   return out;
 }
+// Key sessions follow the evidence base (knowledge/reports, §16), not a rotation for its own sake. Inside a 3-week block the
+// same protocol grows a step at a time (more work at the same intensity); the plan's phase picks the protocol: base = pyramidal
+// (rule 1, sweet spot / tempo), build = the last 6–8 weeks shift to VO2 work (rules 4, 23), deload and taper keep one short
+// intense piece at less volume (rules 77, 78). Long, easy and swim sessions stay as the usual week has them (rules 1, 20, 15).
+// Each step: [ru, en, rule]. The rule shows up in the session's guide as the reason.
+const PROTOCOLS = {
+  bike_q: {
+    base: [['Sweet spot 3×10 мин, между 5 мин легко', 'Sweet spot 3×10 min, 5 min easy between', 25], ['Sweet spot 3×12 мин, между 4 мин легко', 'Sweet spot 3×12 min, 4 min easy between', 25], ['Sweet spot 2×20 мин, между 5 мин легко', 'Sweet spot 2×20 min, 5 min easy between', 25]],
+    build: [['VO2 5×3 мин, между 3 мин легко', 'VO2 5×3 min, 3 min easy between', 23], ['VO2 4×4 мин, между 4 мин легко', 'VO2 4×4 min, 4 min easy between', 23], ['4×8 мин тяжело и ровно, между 2 мин легко', '4×8 min hard and even, 2 min easy between', 23]],
+    easy: [['Коротко: 2×8 мин sweet spot, остальное Z2', 'Short: 2×8 min sweet spot, the rest Z2', 77]],
+  },
+  run_q: {
+    base: [['Темп 2×10 мин Z3, между 3 мин трусцой', 'Tempo 2×10 min Z3, 3 min jog between', 1], ['Темп 3×10 мин Z3, между 2 мин трусцой', 'Tempo 3×10 min Z3, 2 min jog between', 1], ['Темп 20 мин Z3 непрерывно', 'Tempo 20 min Z3 continuous', 1]],
+    build: [['VO2 5×3 мин, между 2 мин трусцой', 'VO2 5×3 min, 2 min jog between', 23], ['VO2 4×4 мин, между 3 мин трусцой', 'VO2 4×4 min, 3 min jog between', 23], ['VO2 6×3 мин, между 2 мин трусцой', 'VO2 6×3 min, 2 min jog between', 23]],
+    easy: [['Лёгкий бег Z2 и 4×20 с ускорения', 'Easy Z2 run with 4×20 s strides', 77]],
+  },
+  gym: {
+    base: [['Присед, румынская тяга, подъёмы на носки, кор — 2 подхода × 6–8, RIR 2–3', 'Squat, Romanian deadlift, calf raises, core — 2 sets × 6–8, RIR 2–3', 85], ['Присед, румынская тяга, подъёмы на носки, кор — 3 подхода × 5–6, RIR 2', 'Squat, Romanian deadlift, calf raises, core — 3 sets × 5–6, RIR 2', 79], ['Присед, румынская тяга, подъёмы на носки, кор — 3 подхода × 4–6, RIR 1–2', 'Squat, Romanian deadlift, calf raises, core — 3 sets × 4–6, RIR 1–2', 79]],
+    easy: [['Тот же вес, 1–2 подхода на упражнение', 'Same weight, 1–2 sets an exercise', 80]],
+  },
+};
+const PROTO_WHY = {
+  1: ['A/B', 'Основа у любителя — пирамида: много лёгкого, немного темпа, редкие тяжёлые.', 'An amateur’s base is a pyramid: lots of easy, some tempo, little hard work.'],
+  23: ['A/B', 'Полноценная VO2-сессия — от 15 мин работы отрезками от 2 мин; перед стартом последние 6–8 недель смещаются к ней.', 'A real VO2 session is 15+ min of work in 2+ min reps; the last 6–8 weeks before a race shift towards it.'],
+  25: ['B/C', 'Длинные отрезки на 88–95% FTP; в блоке растёт время работы, мощность та же.', 'Long reps at 88–95% FTP; across the block the work time grows, the power stays.'],
+  77: ['C', 'Неделя разгрузки: объём −30–50%, одна короткая интенсивная часть остаётся.', 'Deload week: volume −30–50%, one short intense piece stays.'],
+  78: ['A', 'Подводка: объём −40–60%, интенсивность и частота сохраняются.', 'Taper: volume −40–60%, intensity and frequency stay.'],
+  79: ['A', 'Тяжело и мало: 2–4 упражнения × 2–3 подхода × 4–8 повторов, без отказа.', 'Heavy and short: 2–4 exercises × 2–3 sets × 4–8 reps, no failure.'],
+  80: ['B', 'Поддержание — тот же вес, меньше подходов.', 'Maintenance: the same weight, fewer sets.'],
+  85: ['A', 'Начало блока — 1–2 подхода, чтобы не было сильной крепатуры.', 'A block starts with 1–2 sets to keep soreness down.'],
+};
+const PHASE_SCALE = {deload: 0.7, taper: 0.6}; // rules 77, 78
+function varySessions(wk, sessions) {
+  const ow = outlookWeek(wk), phase = ow?.phase || 'base', set = phase === 'deload' || phase === 'taper' ? 'easy' : phase === 'build' || phase === 'peak' ? 'build' : 'base';
+  const n = Math.max(0, weeksFrom(state.plan?.start || ymd(mondayOf(new Date())), wk)), k = PHASE_SCALE[phase] || 1;
+  // a block restarts after each easy week of the outlook (3:1), so its first week is always the lightest step
+  const ws = state.plan?.outlook?.weeks || [];
+  let sinceEasy = n;
+  if (ws.length) { sinceEasy = 0; for (let j = n - 1; j >= 0 && ws[j] && !PHASE_SCALE[ws[j].phase]; j--) sinceEasy++; }
+  for (const s of sessions) {
+    const steps = PROTOCOLS[s.kind]?.[set] || PROTOCOLS[s.kind]?.base;
+    if (steps) { const i = sinceEasy % steps.length, [ru, en, rule] = steps[i]; s.detail = L(ru, en); s.rule = phase === 'taper' ? 78 : rule; s.block = set === 'easy' ? 0 : i + 1; }
+    if (k < 1 && s.kind !== 'climb') s.min = Math.max(20, Math.round(s.min * k / 5) * 5);
+  }
+  return sessions;
+}
+// Weeks built before v50 kept the usual week's text in every session: give future ones their block step once.
+// Only sessions still as the template made them (no assistant plan, not moved by hand, not done).
+function revary(wk, week) {
+  if (week.varied || week.planBy || wk <= ymd(mondayOf(new Date()))) return;
+  const T = Object.fromEntries(templateFor().map(t => [t.id, t]));
+  const fresh = week.sessions.filter(x => x.tid && T[x.tid] && x.status === 'planned' && (x.detail || '') === (T[x.tid].detail || ''));
+  const before = fresh.map(x => x.min); varySessions(wk, fresh); fresh.forEach((x, i) => { x.min = before[i]; }); // keep placed lengths
+  week.varied = true; persist();
+}
 function ensureWeek(wk) {
-  if (state.weeks[wk]) return state.weeks[wk];
+  if (state.weeks[wk]) { revary(wk, state.weeks[wk]); return state.weeks[wk]; }
   if (todayIdx(wk) > 6) return null; // past weeks are not planned retroactively
   // A week first opened mid-way starts from today: days already gone are not back-filled.
   const ti = todayIdx(wk);
-  const week = {sessions: state.pause ? [] : templateFor().filter(t => t.day >= ti).map(newSession), log: [], away: [], cal: {}, busySeen: !!state.local.busy[wk], ...(state.pause ? {paused: true} : {})};
+  const week = {sessions: state.pause ? [] : varySessions(wk, templateFor().filter(t => t.day >= ti).map(newSession)), log: [], away: [], cal: {}, busySeen: !!state.local.busy[wk], varied: true, ...(state.pause ? {paused: true} : {})};
   place(wk, week, {fresh: true});
   if (!state.pause) {
     const before = snapshot(week), gl = guard(wk, week);
@@ -1696,7 +1751,7 @@ function planCardsHTML(wk) {
     return `<section class="card plan-cta"><h3>${L('Собери план под себя', 'Build a plan that fits you')}</h3><p>${cloud.ai ? L('Цель, спорт и время — ассистент соберёт неделю по твоим тренировкам из Garmin, а по выходным будет предлагать следующую.', 'Goal, sports and time — the assistant builds a week from your Garmin workouts and proposes the next one every weekend.') : L('Цель, спорт и время — и неделя соберётся сама. С ассистентом — по твоей истории тренировок.', 'Goal, sports and time — and the week builds itself. With the assistant, from your workout history.')}</p>
       <div class="acts"><button class="btn sm primary" data-a="plan-open">${L('Собрать план', 'Build a plan')}</button><button class="btn sm quiet" data-a="plan-skip">${L('Не сейчас', 'Not now')}</button></div></section>`;
   }
-  if (wk !== cur && wk !== nwk) return '';
+  if (wk !== nwk) return ''; // next week's plan and its setup sit on next week's own page
   const p = state.proposals[nwk];
   if (p?.status === 'new') return `<button class="card plan-prop" data-a="prop-open" data-wk="${nwk}"><span class="plan-prop-eyebrow">${L('План на следующую неделю', 'Next week’s plan')}</span><b>${esc(p.summary)}</b><span class="muted">${p.sessions.length} ${L('трен.', 'sessions')} · ${fHours(planTotal(p.sessions))}</span><span class="nudge-go">${L('Посмотреть', 'Review')} ›</span></button>`;
   if (p?.status === 'pending') return `<div class="nudge quiet-nudge"><span>${L('Ассистент собирает план на следующую неделю…', 'The assistant is drafting next week…')}</span></div>`;
@@ -1976,6 +2031,7 @@ function programHTML() {
 
   // What's next: the coming weeks from the outlook
   if (p?.outlook) {
+    // this week and the 3 after it, as far as the schedule goes
     const next = [0, 1, 2, 3].map(k => ({wk: ymd(addDays(parseYmd(cur), 7 * k)), w: outlookWeek(ymd(addDays(parseYmd(cur), 7 * k)))})).filter(x => x.w);
     if (next.length) h += `<section class="pg-card"><div class="section-title" style="padding-top:0">${L('Дальше', 'Coming up')}</div><div class="list">${next.map((x, i) => `<div class="row"><span class="t"><b>${i === 0 ? L('Эта неделя', 'This week') : fDay(x.wk)}</b><span>${esc(L(PHASE[x.w.phase][0], PHASE[x.w.phase][1]))}</span></span><span class="num pg-val">${fH(x.w.hours)}</span></div>`).join('')}</div>
       <p class="hint" style="padding-top:8px">${L('Каждые выходные ассистент собирает следующую неделю по этому ориентиру и по тому, как прошла текущая.', 'Every weekend the assistant builds the next week from this guide and how the current one went.')}</p></section>`;
@@ -2228,13 +2284,16 @@ function sessionGuide(s) {
     g.goal = L('Восстановление', 'Recovery');
     g.steps = [[L('Основное', 'Main'), hrText(s.detail) || L('Прогулка 20–40 мин и мобильность', '20–40 min walk and mobility')]];
   }
+  const why = PROTO_WHY[s.rule];
+  if (why) { g.critical = g.critical.filter(c => c.no !== s.rule); g.critical.unshift({no: s.rule, grade: why[0], text: L(why[1], why[2])}); }
+  if (s.block != null) g.block = s.block ? L(`Неделя ${s.block} из 3 в блоке: ${s.block === 1 ? 'начало, работы меньше всего' : s.block === 2 ? 'работы больше, чем на прошлой, интенсивность та же' : 'больше всего работы, дальше — легче'}.`, `Week ${s.block} of 3 in the block: ${s.block === 1 ? 'the start, the least work' : s.block === 2 ? 'more work than last week, same intensity' : 'the most work; easier after this'}.`) : L('Лёгкая неделя: меньше объёма, одна короткая интенсивная часть.', 'Easy week: less volume, one short intense piece.');
   if (state.health?.track && (KINDS[k].impact || KINDS[k].hard)) crit(48, 'B/C', `Боль в месте травмы ≥2/10 во время тренировки — стоп${KINDS[k].sport === 'run' ? ' и пешком' : ''}${state.health.rule ? '. Твоё правило: ' + state.health.rule : ''}.`, `Pain at the injury site ≥2/10 during the session — stop${KINDS[k].sport === 'run' ? ' and walk' : ''}${state.health.rule ? '. Your rule: ' + state.health.rule : ''}.`);
   return g;
 }
 function guideHTML(s) {
   const g = sessionGuide(s);
   const noZones = !effFtp() && !effThr() && (KINDS[s.kind].sport === 'run' || KINDS[s.kind].sport === 'bike');
-  return `<div class="guide"><p class="guide-goal">${esc(g.goal)}</p>
+  return `<div class="guide"><p class="guide-goal">${esc(g.goal)}</p>${g.block ? `<p class="hint" style="margin:-4px 0 8px">${esc(g.block)}</p>` : ''}
     <div class="section-title">${L('Как делать', 'How to do it')}</div><div class="guide-steps">${g.steps.map(([a, b]) => `<div><b>${esc(a)}</b><span>${esc(b)}</span></div>`).join('')}</div>
     ${g.targets.length ? `<div class="section-title">${L('Твои цифры', 'Your numbers')}</div><ul class="plan-why">${g.targets.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
     ${noZones ? `<p class="hint" style="padding-top:6px"><button class="btn link" style="min-height:0;padding:0;display:inline;width:auto" data-a="zones-open">${L('Укажи FTP и пороговый темп', 'Add your FTP and threshold pace')}</button> ${L('— и здесь будут ватты и темп по зонам.', '— and this shows watts and pace by zone.')}</p>` : ''}
@@ -2446,7 +2505,7 @@ function weekHTML() {
   const wk = view.wk, week = ensureWeek(wk), ti = todayIdx(wk), D = DAYS();
   const sub = weekTitle(wk) + (ti >= 0 && ti <= 6 ? L(' · эта неделя', ' · this week') : ti < 0 ? (ti >= -7 ? L(' · следующая', ' · next week') : '') : '');
   let h = `<main class="screen"><header class="nav"><div class="nav-row">
-    <span class="weeknav"><button class="nav-btn icon-btn" data-a="wk" data-d="-7" aria-label="${L('Прошлая неделя', 'Previous week')}">${icon('left')}</button><button class="nav-btn icon-btn" data-a="wk" data-d="7" aria-label="${L('Следующая неделя', 'Next week')}">${icon('right')}</button>${ti < 0 || ti > 6 ? `<button class="nav-btn link" data-a="wk-today">${L('Сегодня', 'Today')}</button>` : ''}</span>
+    <span class="weeknav"><button class="nav-btn icon-btn" data-a="wk" data-d="-7" aria-label="${L('Прошлая неделя', 'Previous week')}">${icon('left')}</button><button class="nav-btn icon-btn" data-a="wk" data-d="7" ${wk >= ymd(addDays(mondayOf(new Date()), 21)) ? 'disabled ' : ''}aria-label="${L('Следующая неделя', 'Next week')}">${icon('right')}</button>${ti < 0 || ti > 6 ? `<button class="nav-btn link" data-a="wk-today">${L('Сегодня', 'Today')}</button>` : ''}</span>
     <span class="nav-right">${cloud.ai ? `<button class="nav-btn icon-btn" data-a="chat" aria-label="${L('Ассистент', 'Assistant')}">${icon('chat', 22)}</button>` : ''}<button class="nav-btn" data-a="program">${L('Программа', 'Program')}</button><button class="nav-btn icon-btn" data-a="settings" aria-label="${L('Настройки', 'Settings')}">${icon('gear', 22)}</button></span></div>
     ${window.TrainFood?.tabs('week') || ''}<h1>${L('Неделя', 'Week')}<span class="sub">${esc(sub)}</span></h1></header>`;
   if (lastChange && lastChange.wk === wk) {
@@ -2483,7 +2542,6 @@ function weekHTML() {
   h += weekListHTML(wk, week, effs, ti);
   const un = unplacedAll(week);
   if (un.length) h += `<div class="section-title">${L('Не влезло', 'Didn’t fit')}</div><div class="wl">` + un.map(s => `<div class="wl-row"><span class="wl-day"></span><div class="wl-items"><button class="wl-item" data-a="open" data-id="${s.id}"><span class="dot ${KINDS[s.kind].sport}"></span><span class="wl-name">${esc(kName(s.kind))}</span><span class="wl-meta num">${fDur(s.min)}</span></button><span class="wl-note">${esc(s.why)}</span></div></div>`).join('') + `</div>`;
-  if (ti >= 0 && ti <= 6) h += nextWeekHTML(wk);
   if (week.log.length) {
     h += `<details class="log" ${logOpen ? 'open' : ''}><summary><span>${L('История изменений', 'Change history')}</span><span class="log-n num">${week.log.length}</span><svg class="log-chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary><div class="list">` + week.log.slice(0, 8).map(e => `<div class="row" style="display:block"><span class="t"><b>«${esc(e.text)}»</b> <span class="muted" style="font-size:14px">${new Date(e.at).toLocaleString(lang === 'ru' ? 'ru-RU' : 'en-GB', {weekday: 'short', hour: '2-digit', minute: '2-digit'})}</span>${e.lines.map(l => `<span style="font-size:15px;color:var(--ink-2)">→ ${esc(l)}</span>`).join('')}</span></div>`).join('') + `</div></details>`;
   }
@@ -2492,17 +2550,6 @@ function weekHTML() {
 
 // Next week, folded under this one: the built week if there is one, else the assistant's proposal, else the usual week.
 // Read-only here; a tap on a row opens that week.
-function nextWeekHTML(wk) {
-  const nwk = ymd(addDays(parseYmd(wk), 7)), built = state.weeks[nwk], prop = state.proposals[nwk];
-  const src = built ? built.sessions.filter(s => s.status !== 'dropped' && s.day != null) : prop?.status === 'new' && prop.sessions?.length ? prop.sessions : templateFor();
-  const by = built ? '' : prop?.status === 'new' ? L(' · предложение ассистента', ' · assistant’s proposal') : L(' · по обычной неделе', ' · from your usual week');
-  const ss = src.filter(s => s.day != null && KINDS[s.kind]).slice().sort((a, b) => a.day - b.day || (a.start ?? 0) - (b.start ?? 0));
-  if (!ss.length) return '';
-  const D = DAYS(), min = ss.reduce((t, s) => t + (s.min || 0), 0);
-  return `<details class="wk-plan" ${planOpen ? 'open' : ''}><summary><span class="wk-plan-t"><b>${L('План следующей недели', 'Next week’s plan')}</b><span class="muted">${ss.length} ${L('трен.', 'sessions')} · ${fHours(min)}${by}</span></span><svg class="log-chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></summary>
-    <div class="list">${ss.map(s => `<button class="row nw-row" data-a="wk" data-d="7"><span class="nw-d">${D[s.day]}</span><span class="t"><b><span class="dot ${KINDS[s.kind].sport}"></span> ${esc(kName(s.kind))}</b>${s.detail ? `<span>${esc(hrText(s.detail))}</span>` : ''}</span><span class="v num">${fDur(s.min)}${s.start != null ? `<span>${hm(s.start)}</span>` : ''}</span></button>`).join('')}</div>
-    ${prop?.status === 'new' && !built ? `<button class="btn quiet" data-a="prop-open" data-wk="${nwk}" style="margin-top:10px">${L('Посмотреть предложение', 'Review the proposal')}</button>` : ''}</details>`;
-}
 // The one thing to do next: today's session, or the next one ahead. Its day's calendar is drawn here and only here.
 function nextUp(effs, ti) {
   const from = Math.max(ti, 0);
@@ -2667,8 +2714,8 @@ function cardsHTML(wk, week) {
   return h;
 }
 const pending = {sit: null, walk: null, rest: false};
-let logOpen = false, planOpen = false;
-document.addEventListener('toggle', ev => { if (ev.target.classList?.contains('log')) logOpen = ev.target.open; if (ev.target.classList?.contains('wk-plan')) planOpen = ev.target.open; }, true);
+let logOpen = false;
+document.addEventListener('toggle', ev => { if (ev.target.classList?.contains('log')) logOpen = ev.target.open; }, true);
 
 const TL_FROM = 6 * 60, TL_TO = 23 * 60;
 const pct = m => Math.max(0, Math.min(100, (m - TL_FROM) / (TL_TO - TL_FROM) * 100));
@@ -3298,7 +3345,7 @@ document.addEventListener('click', ev => {
   if (a === 'weekly-make') { const wk2 = el.dataset.wk; makeWeekly(wk2); proposalSheet(wk2); return; }
   if (a === 'chat-act') { const id = String(el.dataset.id).startsWith('hk:') ? el.dataset.id : Number(el.dataset.id), b = (state.local.acts?.list || []).find(x => x.id === id); return openChat(L(`Разбери тренировку: ${b?.name || 'эта'}, ${(b?.start || '').slice(0, 10)}`, `Review this workout: ${b?.name || ''}, ${(b?.start || '').slice(0, 10)}`), {act: id}); }
   if (a === 'chip') { const inp = $('#cmdInput'); inp.value = el.dataset.t; inp.focus(); return; }
-  if (a === 'wk') { view.wk = ymd(addDays(parseYmd(wk), +el.dataset.d)); lastChange = null; render(); if (cloud.user && cloud.cals?.length && todayIdx(view.wk) <= 6) loadBusy(view.wk); ensureHistory(view.wk); return; }
+  if (a === 'wk') { const to = ymd(addDays(parseYmd(wk), +el.dataset.d)); if (to > ymd(addDays(mondayOf(new Date()), 21))) { toast(L('Расписание — на 3 недели вперёд', 'The schedule runs 3 weeks ahead')); return; } view.wk = to; lastChange = null; render(); if (cloud.user && cloud.cals?.length && todayIdx(view.wk) <= 6) loadBusy(view.wk); ensureHistory(view.wk); return; }
   if (a === 'wk-today') { view.wk = ymd(mondayOf(new Date())); render(); return; }
   if (a === 'settings') { view.v = 'settings'; render(); scrollTo(0, 0); if (cloud.user) fn('me').then(d => { if (!d.error) { cloud.me = d; if (view.v === 'settings') render(); } }); if (cloud.user) fn('cal-status').then(d => { if (!d.error) { cloud.cals = d.calendars; cloud.google = d.google; if (view.v === 'settings') render(); } }); return; }
   if (a === 'back') { view.v = 'week'; render(); return; }
@@ -3427,7 +3474,7 @@ document.addEventListener('click', ev => {
     const before = snapshot(week), ti = todayIdx(wk);
     const keep = week.sessions.filter(s => s.status !== 'planned' || (s.day != null && s.day < ti));
     const usedT = new Set(keep.map(s => s.tid));
-    week.sessions = [...keep, ...templateFor().filter(t => !usedT.has(t.id)).map(newSession)];
+    week.sessions = [...keep, ...varySessions(wk, templateFor().filter(t => !usedT.has(t.id)).map(newSession))];
     place(wk, week, {fresh: true});
     view.v = 'week';
     return commit(wk, week, before, L('пересобрать по шаблону', 'rebuild from template'), [L('Неделя пересобрана по шаблону', 'Week rebuilt from the template')]);
@@ -3524,7 +3571,7 @@ document.addEventListener('pointerdown', ev => { if (ev.target.closest('.chip'))
 // Debug hook for local testing (busy/acts injection); harmless in production.
 // What add-ons (food.js) may use; nothing else in the app depends on them.
 window.TrainApp = {hrText, loadWellness, get wellness() { return state.local.wellness; }, L, esc, kName, KINDS, fDur, fHours, effective, todayStr, DAYS, render, $, cloud, toast, icon, view, ymd, parseYmd, mondayOf, addDays, SPORTS, trainingSport, actSport, lang: () => lang, get state() { return state; }};
-window.trainDebug = {get state() { return state; }, get cloud() { return cloud; }, push, briefs, contribution, hrAuto, thrAuto, ftpAuto, effThr, effFtp, hrWords, trainStatus, breakOf, synced, openChat, chatContext, openWizard, openOnboarding, onb, onbGo, hrTargets, hrText, wiz, rulesPlan, projectOutlook, outlookWeek, buildPlan, applyWeekPlan, makeWeekly, maybeWeekly, weeklyDue, planContext, proposalSheet, view, run, parse, onBusy, matchActs, render, persist, place, setBusy(wk, events) { state.local.busy[wk] = {at: Date.now(), events}; saveLocal(); onBusy(wk); }, setActs(list) { state.local.acts = {at: Date.now(), list, linked: true}; saveLocal(); for (const wk of Object.keys(state.weeks)) { const week = state.weeks[wk], before = snapshot(week), lines = matchActs(wk, week); if (lines.length) commit(wk, week, before, 'Garmin', lines); } render(); }};
+window.trainDebug = {get state() { return state; }, varySessions, ensureWeek, get cloud() { return cloud; }, push, briefs, contribution, hrAuto, thrAuto, ftpAuto, effThr, effFtp, hrWords, trainStatus, breakOf, synced, openChat, chatContext, openWizard, openOnboarding, onb, onbGo, hrTargets, hrText, wiz, rulesPlan, projectOutlook, outlookWeek, buildPlan, applyWeekPlan, makeWeekly, maybeWeekly, weeklyDue, planContext, proposalSheet, view, run, parse, onBusy, matchActs, render, persist, place, setBusy(wk, events) { state.local.busy[wk] = {at: Date.now(), events}; saveLocal(); onBusy(wk); }, setActs(list) { state.local.acts = {at: Date.now(), list, linked: true}; saveLocal(); for (const wk of Object.keys(state.weeks)) { const week = state.weeks[wk], before = snapshot(week), lines = matchActs(wk, week); if (lines.length) commit(wk, week, before, 'Garmin', lines); } render(); }};
 
 // Back from Oura's consent screen: #oura=ok or #oura=<reason>.
 const ouraBack = (location.hash.match(/oura=([\w-]+)/) || [])[1];
