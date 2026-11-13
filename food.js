@@ -1,5 +1,5 @@
 // food.js — a personal add-on to «Неделя»: the day's КБЖУ plan from weight and training, meals by photo or text
-// (estimated by the train-food function), fuel for today's session, supplements. Admin only.
+// (estimated by the train-food function), fuel for today's session, supplements. For every member (since v51).
 // Kept apart on purpose, so it can be removed cleanly:
 //   1. delete this file and its <script> line in index.html (and 'food.js' in sw.js ASSETS);
 //   2. drop table public.training_food (schema.sql, «Food add-on») and delete the train-food function;
@@ -10,15 +10,10 @@
   if (!window.TrainApp) return;
   const TrainApp = window.TrainApp, {L, esc, kName, KINDS, fDur, effective, todayStr, DAYS, render, $, cloud, toast, icon, ymd, parseYmd, mondayOf, addDays} = TrainApp;
   const KEY = 'train.food.v1';
-  const DEFAULT_SUPPS = [
-    {id: 'creatine', name: 'Креатин', dose: '6 г', days: null},
-    {id: 'mg', name: 'Магний', dose: '2 капс. вечером', days: null},
-    {id: 'd3', name: 'D3', dose: '1 капс.', days: [0, 2, 4, 6]},
-  ];
   let F = null, timer = null, pulled = false;
   try { F = JSON.parse(localStorage.getItem(KEY)); } catch {}
-  if (!F) F = {weight: null, supps: DEFAULT_SUPPS.map(x => ({...x})), log: {}, at: 0};
-  const on = () => !!cloud.me?.admin;
+  if (!F) F = {weight: null, supps: [], log: {}, at: 0}; // supplements are each person's own: none by default
+  const on = () => !!cloud.me?.member;
   const day = d => { F.log[d] = F.log[d] || {s: {}, p: [], m: []}; F.log[d].m = F.log[d].m || []; return F.log[d]; };
   const busy = {on: false};
   // The day's plan: protein 1.8 g/kg and fat 1 g/kg every day; carbs follow the training load —
@@ -92,7 +87,7 @@
         L('После: 20–40 г белка и углеводы в течение 1–2 ч.', 'After: 20–40 g protein plus carbs within 1–2 h.')]};
     }
     if (hard) return {head: kName(hard.kind), lines: [L('До: лёгкий углеводный перекус за 1–2 ч (банан, тост).', 'Before: a light carb snack 1–2 h out (banana, toast).'), L('После: 20–40 г белка.', 'After: 20–40 g protein.')]};
-    if (gym) return {head: kName(gym.kind), lines: [L('После: 20–40 г белка; креатин можно сразу после.', 'After: 20–40 g protein; creatine can go right after.')]};
+    if (gym) return {head: kName(gym.kind), lines: [F.supps.some(x => /креатин|creatine/i.test(x.name)) ? L('После: 20–40 г белка; креатин можно сразу после.', 'After: 20–40 g protein; creatine can go right after.') : L('После: 20–40 г белка.', 'After: 20–40 g protein.')]};
     return null;
   }
   const suppsFor = dow => F.supps.filter(x => !x.days || x.days.includes(dow));
@@ -150,7 +145,7 @@
         <p class="fh-left${left < 0 ? ' over' : ''}">${left >= 0 ? L(`Осталось ${fmt(left)} ккал`, `${fmt(left)} kcal left`) : L(`На ${fmt(-left)} ккал больше нормы`, `${fmt(-left)} kcal over`)}</p>
         <div class="mlist">${MAC().map(([k, n, hue]) => meter(n, E[k], T[k], hue, L(' г', ' g'))).join('')}</div>
         <p class="hint fh-why">${T.min ? L(`День с тренировкой ${fDur(T.min)}: углеводы ${String(T.ck).replace('.', ',')} г/кг, белок 1,8, жиры 1 — на поддержание веса.`, `A ${fDur(T.min)} training day: carbs ${T.ck} g/kg, protein 1.8, fat 1 — for maintenance.`) : L('День отдыха: углеводы 3,5 г/кг, белок 1,8, жиры 1 — на поддержание веса.', 'Rest day: carbs 3.5 g/kg, protein 1.8, fat 1 — for maintenance.')}</p></section>`;
-    } else h += `<section class="card fh"><label class="field">${L('Вес, кг — и покажу норму калорий и БЖУ на день', 'Weight, kg — for the day’s calorie and macro targets')}<input data-food="weight" type="number" inputmode="decimal" min="35" max="200" step="0.5" placeholder="75"></label></section>`;
+    } else h += `<section class="card fh"><label class="field">${L('Вес, кг — и покажу норму калорий и БЖУ на день', 'Weight, kg — for the day’s calorie and macro targets')}<input data-food="weight" type="number" inputmode="decimal" min="35" max="200" step="0.5" placeholder="75"></label><p class="hint" style="margin:8px 0 0">${L('Еду по фото или описанию оценивает ИИ (Claude): фото уходит на оценку и не хранится, остаётся только результат.', 'Meals by photo or text are estimated by AI (Claude): the photo is sent for the estimate and not kept, only the result is.')}</p></section>`;
     // fuel around the day's session
     const fuel = fuelFor(ss);
     if (fuel) h += `<section class="card ffuel"><div class="ffuel-h"><span class="muted">${L('Под тренировку', 'Around training')}</span><b>${esc(fuel.head)}</b></div>${fuel.lines.map(l => { const [k, ...r] = l.split(': '); return `<div class="ffuel-l"><span>${esc(k)}</span><p>${esc(r.join(': '))}</p></div>`; }).join('')}</section>`;
@@ -549,7 +544,7 @@
       <button class="food-fab-btn" data-a="food-fab" aria-label="${L('Закрыть', 'Close')}">✕</button>`
       : `<button class="food-fab-btn" data-a="food-fab">${busy.on ? L('Считаю…', 'Estimating…') : L('+ Еда', '+ Meal')}</button>`;
   }
-  // The account (and with it the admin flag) arrives after the first paint: redraw once it does, so the tabs show at launch.
+  // The account (and with it membership) arrives after the first paint: redraw once it does, so the tabs show at launch.
   let wasOn = false, opened = false;
   setInterval(() => {
     if (!pulled && cloud.user && cloud.me) pull();
