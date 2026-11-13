@@ -119,7 +119,7 @@
   // Three tabs at the top, for the person the add-on is on for.
   function tabs(cur) {
     if (!on()) return '';
-    return `<div class="tabs3" role="tablist">${[['week', L('Неделя', 'Week')], ['food', L('Еда', 'Food')], ['stats', L('Анализ', 'Insights')]].map(([v, n]) => `<button role="tab" data-a="food-tab" data-v="${v}" aria-selected="${cur === v}">${n}</button>`).join('')}</div>`;
+    return `<div class="tabs3" role="tablist">${[['today', L('Сегодня', 'Today')], ['week', L('Неделя', 'Week')], ['food', L('Еда', 'Food')], ['stats', L('Анализ', 'Insights')]].map(([v, n]) => `<button role="tab" data-a="food-tab" data-v="${v}" aria-selected="${cur === v}">${n}</button>`).join('')}</div>`;
   }
   // On the Week tab: two lines — calories and protein against the day's target; a tap opens Food.
   function weekRow(wk, week, ti) {
@@ -133,7 +133,7 @@
   const head = (cur, title, sub) => `<header class="nav"><div class="nav-row"><span></span><span class="nav-right"><button class="nav-btn icon-btn" data-a="settings" aria-label="${L('Настройки', 'Settings')}">${icon('gear', 22)}</button></span></div>${tabs(cur)}<h1>${title}<span class="sub">${esc(sub)}</span></h1></header>`;
   function screen(v) {
     if (!on()) { TrainApp.view.v = 'week'; return ''; }
-    return v === 'stats' ? stats() : dayScreen();
+    return v === 'stats' ? stats() : v === 'today' ? todayScreen() : dayScreen();
   }
 
   // ---------- «Еда»: the day ----------
@@ -165,6 +165,78 @@
     else h += `<div class="flog-empty"><b>${isToday ? L('Сегодня пока ничего', 'Nothing yet today') : L('За этот день записей нет', 'Nothing logged that day')}</b><span class="muted">${L('Сфоткай тарелку или опиши — кнопка «+ Еда» внизу.', 'Snap your plate or describe it — «+ Meal» below.')}</span></div>`;
     h += `<div class="quickp"><span class="muted">${L('Быстро: белок', 'Quick: protein')}</span>${[20, 30, 40].map(g => `<button class="chip" data-a="food-p" data-g="${g}">+${g} ${L('г', 'g')}</button>`).join('')}${(d.p || []).length ? `<button class="chip" data-a="food-p-undo" aria-label="${L('Отменить последнее', 'Undo last')}">↶</button>` : ''}</div>`;
     if (supps.length) h += `<div class="section-title">${L('Добавки', 'Supplements')} · ${supps.filter(x => d.s?.[x.id]).length}/${supps.length}</div><div class="supps">${supps.map(x => `<button class="supp" data-a="food-s" data-id="${esc(x.id)}" aria-pressed="${!!d.s?.[x.id]}"><span class="supp-ck">${d.s?.[x.id] ? '✓' : ''}</span><span><b>${esc(x.name)}</b>${x.dose ? `<span class="muted">${esc(x.dose)}</span>` : ''}</span></button>`).join('')}</div>`;
+    return h + '</main>';
+  }
+
+  // ---------- «Сегодня»: sleep, the day's plan, food; after 21:00 by the phone's clock, the day's result ----------
+  const hhmm = iso => iso ? new Date(iso).toLocaleTimeString(L('ru-RU', 'en-GB'), {hour: '2-digit', minute: '2-digit'}) : '';
+  const durHM = min => `${Math.floor(min / 60)} ${L('ч', 'h')} ${String(min % 60).padStart(2, '0')} ${L('мин', 'min')}`;
+  function todayScreen() {
+    const date = todayStr(), now = new Date(), evening = now.getHours() >= 21;
+    const ss = sessionsOn(date), T = targets(ss), d = F.log[date] || {s: {}, p: [], m: []}, E = eaten(d);
+    const supps = suppsFor((now.getDay() + 6) % 7), suppDone = supps.filter(x => d.s?.[x.id]).length;
+    const W = TrainApp.wellness, days = W?.days || [], w = days.find(x => x.date === date), past = days.filter(x => x.date < date);
+    const avg = k => { const xs = past.map(x => x[k]).filter(v => v != null); return xs.length >= 3 ? xs.reduce((a, b) => a + b, 0) / xs.length : null; };
+    const when = now.toLocaleDateString(L('ru-RU', 'en-GB'), {weekday: 'long', day: 'numeric', month: 'long'});
+    let h = `<main class="screen today-screen">${head('today', L('Сегодня', 'Today'), when)}`;
+    const planned = ss.filter(x => x.status === 'planned' || x.status === 'done'), done = ss.filter(x => x.status === 'done');
+    const doneMin = done.reduce((t, x) => t + (x.act?.min ?? x.min), 0), planMin = planned.reduce((t, x) => t + x.min, 0);
+    // tomorrow, for tonight's bedtime
+    const tmr = ymd(addDays(parseYmd(date), 1)), next = sessionsOn(tmr).filter(x => x.status === 'planned').sort((a, b) => (a.start ?? 1e4) - (b.start ?? 1e4))[0];
+    const bedtime = () => {
+      if (!next) return L('Завтра без тренировки — обычный режим, 7–9 ч сна.', 'No session tomorrow — your usual 7–9 h of sleep.');
+      const big = next.min >= 75 || KINDS[next.kind]?.hard || /_long$/.test(next.kind);
+      if (next.start == null || next.start > 13 * 60) return L(`Завтра ${kName(next.kind).toLowerCase()} — 7–9 ч сна, без позднего тяжёлого ужина.`, `Tomorrow: ${kName(next.kind).toLowerCase()} — 7–9 h of sleep, no late heavy dinner.`);
+      const bed = next.start - 60 - (big ? 8 : 7.5) * 60, hm2 = m => `${String(Math.floor(((m % 1440) + 1440) % 1440 / 60)).padStart(2, '0')}:${String(((m % 60) + 60) % 60).padStart(2, '0')}`;
+      return L(`Завтра в ${hm2(next.start)} ${kName(next.kind).toLowerCase()}${big ? ' — ключевая' : ''}: ляг до ${hm2(bed)}, чтобы спать ${big ? 8 : 7.5} ч.`, `Tomorrow at ${hm2(next.start)}: ${kName(next.kind).toLowerCase()}${big ? ', a key one' : ''} — in bed by ${hm2(bed)} for ${big ? 8 : 7.5} h of sleep.`);
+    };
+    // the day's result, after 21:00 — first, because the day is done
+    if (evening) {
+      const rows = [];
+      if (planned.length) rows.push([L('Тренировки', 'Training'), done.length === planned.length ? L(`всё сделано · ${fDur(doneMin)}`, `all done · ${fDur(doneMin)}`) : L(`${done.length} из ${planned.length} · ${fDur(doneMin)} из ${fDur(planMin)}`, `${done.length} of ${planned.length} · ${fDur(doneMin)} of ${fDur(planMin)}`), done.length === planned.length]);
+      else rows.push([L('Тренировки', 'Training'), L('день отдыха', 'rest day'), true]);
+      if (T) {
+        const kp = Math.round(E.kcal / T.kcal * 100), pp = Math.round(E.p / T.p * 100);
+        rows.push([L('Калории', 'Calories'), `${fmt(E.kcal)} / ${fmt(T.kcal)} · ${kp}%`, kp >= 85 && kp <= 115]);
+        rows.push([L('Белок', 'Protein'), `${fmt(E.p)} / ${T.p} ${L('г', 'g')} · ${pp}%`, pp >= 90]);
+      }
+      if (supps.length) rows.push([L('Добавки', 'Supplements'), `${suppDone}/${supps.length}`, suppDone === supps.length]);
+      const ok = rows.filter(r => r[2]).length, miss = rows.filter(r => !r[2]).map(r => r[0].toLowerCase());
+      const verdict = ok === rows.length ? L('Хороший день: всё по плану.', 'A good day: all on plan.') : L(`Добрать завтра: ${miss.join(', ')}.`, `To catch up tomorrow: ${miss.join(', ')}.`);
+      h += `<section class="card tday-res"><div class="tday-eyebrow">${L('Итог дня', 'Day result')}</div><b class="tday-verdict">${esc(verdict)}</b>
+        <div class="list">${rows.map(([n, v, good]) => `<div class="row"><span class="t"><b>${esc(n)}</b></span><span class="v"><b class="num">${esc(v)}</b></span><span class="tday-mark ${good ? 'ok' : 'miss'}" aria-label="${good ? L('в норме', 'on target') : L('ниже плана', 'below plan')}">${good ? '✓' : '·'}</span></div>`).join('')}</div>
+        <p class="hint tday-bed">${esc(bedtime())}</p></section>`;
+    }
+    // sleep and stress
+    if (w && (w.sleepMin || w.sleepScore != null)) {
+      const hv = avg('hrv'), rh = avg('rhr'), dHrv = hv && w.hrv ? Math.round((w.hrv / hv - 1) * 100) : null;
+      const low = (w.readiness != null && w.readiness < 70) || (dHrv != null && dHrv <= -15);
+      h += `<section class="card tday-sleep"><div class="tday-eyebrow">${L('Сон', 'Sleep')}${w.bed ? ` · ${hhmm(w.bed)}–${hhmm(w.wake)}` : ''}</div>
+        <div class="tday-big"><b>${w.sleepMin ? durHM(w.sleepMin) : '—'}</b>${w.sleepScore != null ? `<span class="muted">${L('оценка', 'score')} ${w.sleepScore}</span>` : ''}</div>
+        <div class="tday-stats">
+          ${w.readiness != null ? `<div><span class="muted">${L('Готовность', 'Readiness')}</span><b class="num">${w.readiness}</b></div>` : ''}
+          ${w.hrv != null ? `<div><span class="muted">HRV</span><b class="num">${w.hrv}</b>${dHrv != null ? `<span class="${dHrv < -10 ? 'down' : dHrv > 5 ? 'up' : 'muted'}">${dHrv > 0 ? '+' : ''}${dHrv}% ${L('к 2 нед.', 'vs 2 wk')}</span>` : ''}</div>` : ''}
+          ${w.rhr != null ? `<div><span class="muted">${L('Пульс покоя', 'Resting HR')}</span><b class="num">${w.rhr}</b>${rh ? `<span class="muted">${L('обычно', 'usually')} ${Math.round(rh)}</span>` : ''}</div>` : ''}
+          ${w.stressMin != null ? `<div><span class="muted">${L('Стресс днём', 'Daytime stress')}</span><b class="num">${fDur(w.stressMin)}</b><span class="muted">${L('восст.', 'recovery')} ${fDur(w.recoveryMin || 0)}</span></div>` : ''}
+        </div>
+        ${low ? `<p class="tday-warn">${L('Восстановление ниже обычного. Если сегодня тяжёлая — можно облегчить: держи пульс в «Лёгком» или сократи на треть.', 'Recovery is below usual. If today is a hard one, ease it: keep HR in Easy or cut it by a third.')}</p>` : ''}</section>`;
+    } else if (TrainApp.cloud.me?.oura?.linked) {
+      h += `<section class="card tday-sleep"><div class="tday-eyebrow">${L('Сон', 'Sleep')}</div><p class="hint">${W?.error ? L('Oura не ответила — попробую позже.', 'Oura didn’t answer — will retry.') : L('Данных за эту ночь ещё нет — открой приложение Oura, чтобы кольцо синхронизировалось.', 'No data for last night yet — open the Oura app so the ring syncs.')}</p></section>`;
+    } else if (TrainApp.cloud.me?.oura?.available) {
+      h += `<section class="card tday-sleep"><div class="tday-eyebrow">${L('Сон и стресс', 'Sleep and stress')}</div><p class="hint">${L('Подключи Oura — здесь будут сон, HRV, пульс покоя и стресс за день.', 'Connect Oura for sleep, HRV, resting HR and daytime stress here.')}</p><button class="btn quiet" data-a="oura">${L('Подключить Oura', 'Connect Oura')}</button></section>`;
+    }
+    // the day's plan
+    h += `<section class="card tday-plan"><div class="tday-eyebrow">${L('План', 'Plan')}</div>`;
+    if (planned.length) h += `<div class="list">${planned.sort((a, b) => (a.start ?? 1e4) - (b.start ?? 1e4)).map(x => `<div class="row"><span class="t"><b><span class="dot ${KINDS[x.kind].sport}"></span> ${esc(kName(x.kind))}</b>${x.detail ? `<span>${esc(TrainApp.hrText ? TrainApp.hrText(x.detail) : x.detail)}</span>` : ''}</span><span class="v num"><b>${x.status === 'done' ? '✓' : x.start != null ? `${String(Math.floor(x.start / 60)).padStart(2, '0')}:${String(x.start % 60).padStart(2, '0')}` : ''}</b><span>${fDur(x.status === 'done' ? (x.act?.min ?? x.min) : x.min)}</span></span></div>`).join('')}</div>`;
+    else h += `<p class="hint">${L('День отдыха.', 'Rest day.')}${next ? ' ' + L(`Завтра — ${kName(next.kind).toLowerCase()}.`, `Tomorrow: ${kName(next.kind).toLowerCase()}.`) : ''}</p>`;
+    h += `<button class="btn link" data-a="food-tab" data-v="week">${L('Открыть неделю', 'Open the week')} ›</button></section>`;
+    // food
+    h += `<section class="card tday-food"><div class="tday-eyebrow">${L('Еда', 'Food')}</div>`;
+    if (T) h += `<div class="mlist">${meter(L('Калории', 'Calories'), E.kcal, T.kcal, 'var(--accent)', '')}${meter(L('Белки', 'Protein'), E.p, T.p, 'var(--bike)', L(' г', ' g'))}</div>`;
+    else h += `<p class="hint">${L('Впиши вес на вкладке «Еда» — покажу норму.', 'Add your weight on the Food tab for targets.')}</p>`;
+    if (supps.length) h += `<p class="hint" style="margin:10px 0 0">${L('Добавки', 'Supplements')}: ${suppDone}/${supps.length}${suppDone < supps.length ? ' — ' + esc(supps.filter(x => !d.s?.[x.id]).map(x => x.name).join(', ')) : ' ✓'}</p>`;
+    h += `<button class="btn link" data-a="food-tab" data-v="food">${L('Открыть еду', 'Open food')} ›</button></section>`;
+    if (!evening) h += `<p class="hint tday-later">${L('После 21:00 здесь появится итог дня.', 'After 21:00 the day’s result shows up here.')}</p>`;
     return h + '</main>';
   }
 
@@ -265,7 +337,7 @@
     if (a === 'food-p') { day(curDay()).p.push(+el.dataset.g); save(); return true; }
     if (a === 'food-p-undo') { day(curDay()).p.pop(); save(); return true; }
     if (a === 'food-s') { const d = day(curDay()), id = el.dataset.id; if (d.s[id]) delete d.s[id]; else d.s[id] = true; save(); return true; }
-    if (a === 'food-tab') { TrainApp.view.v = ['food', 'stats'].includes(el.dataset.v) ? el.dataset.v : 'week'; vd = null; pick = null; render(); fabRender(); window.scrollTo(0, 0); return true; }
+    if (a === 'food-tab') { TrainApp.view.v = ['today', 'food', 'stats'].includes(el.dataset.v) ? el.dataset.v : 'week'; vd = null; pick = null; render(); fabRender(); window.scrollTo(0, 0); return true; }
     if (a === 'food-goto') { vd = el.dataset.d === todayStr() ? null : el.dataset.d; render(); return true; }
     if (a === 'food-period') { period = +el.dataset.p; pick = null; render(); return true; }
     if (a === 'food-pick') { pick = pick === el.dataset.k ? null : el.dataset.k; render(); return true; }
@@ -299,7 +371,7 @@
   css.textContent = `.food-fab{position:fixed;right:max(16px,env(safe-area-inset-right,0px));bottom:calc(var(--tab, 64px) + 16px + env(safe-area-inset-bottom,0px));z-index:6;display:flex;flex-direction:column;align-items:flex-end;gap:8px}
 .food-fab-btn{min-height:52px;min-width:52px;padding:0 18px;border-radius:26px;background:var(--accent);color:var(--bg);font-weight:600;font-size:16px;box-shadow:0 6px 20px rgba(0,0,0,.25)}
 .food-fab-panel{background:var(--bg);border:1px solid var(--line);border-radius:16px;padding:12px;display:flex;flex-direction:column;gap:8px;width:min(320px,calc(100vw - 32px));box-shadow:0 10px 30px rgba(0,0,0,.3)}
-.tabs3{display:grid;grid-template-columns:repeat(3,1fr);background:var(--fill);border-radius:12px;padding:3px;margin:6px 0 4px}
+.tabs3{display:grid;grid-template-columns:repeat(4,1fr);background:var(--fill);border-radius:12px;padding:3px;margin:6px 0 4px}
 .tabs3 button{min-height:36px;border-radius:9px;font-size:15px;font-weight:600;color:var(--ink-2)}
 .tabs3 button[aria-selected="true"]{background:var(--bg);color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.12)}
 .arc{display:block;overflow:visible}
@@ -347,6 +419,15 @@
 .frow-x{min-height:28px;padding:0;color:var(--muted);justify-content:center}
 .flog-empty{display:flex;flex-direction:column;gap:4px;padding:18px;border:1.5px dashed var(--line);border-radius:14px;text-align:center}
 .stats-screen{padding-bottom:60px}
+.today-screen{padding-bottom:120px}.tday-eyebrow{font-size:13px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px}
+.tday-res{border:1.5px solid color-mix(in srgb,var(--accent) 40%,transparent)}.tday-verdict{display:block;font-size:18px;margin-bottom:6px}
+.tday-mark{width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;flex:none}.tday-mark.ok{background:var(--accent);color:var(--accent-ink)}.tday-mark.miss{background:var(--bg);color:var(--muted)}
+.tday-res .row{gap:10px}.tday-bed{margin:10px 0 0}
+.tday-big{display:flex;align-items:baseline;gap:10px;margin-bottom:12px}.tday-big b{font-size:40px;letter-spacing:-.02em}
+.tday-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px}.tday-stats>div{background:var(--bg);border-radius:12px;padding:10px 12px;display:flex;flex-direction:column;gap:2px;font-size:12px}
+.tday-stats b{font-size:20px}.tday-stats .up{color:var(--accent)}.tday-stats .down{color:var(--warn)}
+.tday-warn{margin:12px 0 0;font-size:14px;color:var(--warn)}.tday-plan .btn.link,.tday-food .btn.link{margin-top:6px;justify-content:flex-start;padding-left:0}
+.tday-later{text-align:center;margin:16px 0}
 .kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:4px}
 .kpi{background:var(--fill);border-radius:14px;padding:12px;display:flex;flex-direction:column;gap:2px;font-size:12px;min-width:0}
 .kpi b{font-size:24px;line-height:1.2}
@@ -437,10 +518,10 @@
       : `<button class="food-fab-btn" data-a="food-fab">${busy.on ? L('Считаю…', 'Estimating…') : L('+ Еда', '+ Meal')}</button>`;
   }
   // The account (and with it the admin flag) arrives after the first paint: redraw once it does, so the tabs show at launch.
-  let wasOn = false;
+  let wasOn = false, opened = false;
   setInterval(() => {
     if (!pulled && cloud.user && cloud.me) pull();
-    if (on() !== wasOn) { wasOn = on(); render(); }
+    if (on() !== wasOn) { wasOn = on(); if (wasOn && !opened && TrainApp.view.v === 'week') { TrainApp.view.v = 'today'; TrainApp.loadWellness?.(); } opened = true; render(); }
     const want = on() && !document.querySelector('.settings') && TrainApp.view.v !== 'stats'; if (fab.hidden === want) fabRender();
   }, 400);
   window.TrainFood = {weekRow, screen, tabs, settings, workoutFuel, briefLine, click, change, fabRender, get data() { return F; }};

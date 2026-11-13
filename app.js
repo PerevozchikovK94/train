@@ -904,6 +904,15 @@ async function connectHealth() {
   await ensureHist12();
   return null;
 }
+async function loadWellness(force) {
+  if (!cloud.user || !cloud.me?.oura?.linked) return;
+  const w = state.local.wellness;
+  if (!force && w && Date.now() - w.at < 30 * 60e3) return;
+  const d = await fn('wellness', {from: ymd(addDays(new Date(), -13)), to: todayStr()});
+  if (d.error && !d.days) return;
+  state.local.wellness = {at: Date.now(), days: d.days || [], source: d.source || 'oura', error: d.error || null};
+  saveLocal(); render();
+}
 const actsFrom = (from, to) => hkOn() ? hkActivities(from, to) : fn('activities', {from, to});
 
 async function loadActs(force) {
@@ -970,6 +979,7 @@ function afterSignIn() {
     const ai = aiStatus();
     if (cloud.cals?.length) await loadBusy(view.wk);
     await loadActs();
+    loadWellness();
     await ai;
     maybeWeekly();
   })();
@@ -2421,7 +2431,7 @@ function toast(msg) { const el = $('#toast'); el.textContent = msg; el.hidden = 
 
 function render() {
   const app = $('#app');
-  app.innerHTML = (view.v === 'food' || view.v === 'stats') && window.TrainFood ? window.TrainFood.screen(view.v) : view.v === 'settings' ? settingsHTML() : view.v === 'program' ? programHTML() : weekHTML();
+  app.innerHTML = ['today', 'food', 'stats'].includes(view.v) && window.TrainFood ? window.TrainFood.screen(view.v) : view.v === 'settings' ? settingsHTML() : view.v === 'program' ? programHTML() : weekHTML();
   $('#cmd').hidden = view.v !== 'week';
   $('#cmdInput').placeholder = cloud.ai ? L('Что поменялось — или спроси', 'What changed — or ask') : L('Что поменялось? «перенеси бег на чт»', 'What changed? “move run to Thu”');
   renderChips();
@@ -3082,6 +3092,8 @@ function settingsHTML() {
     h += cals.map(c => `<div class="row"><span class="t"><b>${icon('calendar', 16)} ${esc(c.label)}</b><span>${c.last_error ? (c.last_error === 'google_revoked' ? L('Доступ отозван — подключи заново', 'Access revoked — connect again') : L('Не загрузился: ', 'Failed: ') + esc(c.last_error)) : c.checked_at ? L('Обновлён ', 'Updated ') + new Date(c.checked_at).toLocaleString(lang === 'ru' ? 'ru-RU' : 'en-GB', {day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'}) : ''}</span></span><button class="nav-btn" data-a="cal-remove" data-id="${esc(c.id)}">${L('Убрать', 'Remove')}</button></div>`).join('');
     if (!cals.length) h += `<div class="row"><span class="t"><b>${icon('calendar', 16)} ${L('Календарь', 'Calendar')}</b><span>${L('Не подключён — тренировки встают в рабочие рамки без учёта встреч', 'Not connected — sessions ignore your meetings')}</span></span></div>`;
     if (NATIVE) h += `<div class="row"><span class="t"><b>Apple Health</b><span>${hkOn() ? L('Подключено · тренировки со всех часов', 'Connected · workouts from any watch') : L('Не подключено', 'Not connected')}</span></span>${hkOn() ? `<button class="nav-btn" data-a="health-off">${L('Выключить', 'Turn off')}</button>` : `<button class="nav-btn" data-a="health-connect">${L('Подключить', 'Connect')}</button>`}</div>`;
+    const ou = cloud.me?.oura;
+    if (ou?.linked || ou?.available) h += `<div class="row"><span class="t"><b>Oura</b><span>${ou.linked ? (ou.error ? L('Ошибка: ', 'Error: ') + esc(ou.error) : L('Подключена · сон, готовность, стресс', 'Connected · sleep, readiness, stress')) : L('Сон, готовность и стресс на экране «Сегодня»', 'Sleep, readiness and stress on «Today»')}</span></span>${ou.linked ? `<button class="nav-btn" data-a="oura-unlink" style="color:var(--danger)">${L('Отвязать', 'Unlink')}</button>` : `<button class="nav-btn" data-a="oura">${L('Подключить', 'Connect')}</button>`}</div>`;
     h += `<div class="row"><span class="t"><b>Garmin</b><span>${gl ? (a?.list ? L(`${a.list.length} активностей с ${since}`, `${a.list.length} activities since ${since}`) : L('Подключён', 'Linked')) + (a?.error ? ' · ' + esc(a.error) : '') : L('Не подключён', 'Not linked')}</span></span>${gl ? `<button class="nav-btn" data-a="garmin-unlink" style="color:var(--danger)">${L('Отвязать', 'Unlink')}</button>` : ''}</div></div>`;
     h += `<div class="stack set-actions">${cloud.google && !NATIVE ? `<button class="btn quiet" data-a="google" ${cloud.calBusy ? 'disabled' : ''}>${L('Подключить Google Календарь', 'Connect Google Calendar')}</button>` : ''}
       ${gl ? `<button class="btn link" data-a="history" ${histBusy.on ? 'disabled' : ''}>${histBusy.on ? L('Загружаю…', 'Loading…') : L('Подтянуть историю Garmin за год', 'Pull a year of Garmin history')}</button>` : ''}</div>`;
@@ -3389,6 +3401,14 @@ document.addEventListener('click', ev => {
     p.then(n => { toast(n == null ? L('Garmin не ответил — попробуй позже', 'Garmin didn’t answer — try later') : L(`Загружено тренировок: ${n}`, `Workouts loaded: ${n}`)); render(); });
     return;
   }
+  if (a === 'oura') {
+    fn('oura-start', {return_to: location.origin + location.pathname}).then(d => {
+      if (d.url) { location.href = d.url; return; }
+      toast(d.error === 'oura_not_configured' ? L('Oura ещё не настроен на сервере', 'Oura isn’t set up on the server yet') : L('Не получилось — проверь сеть', 'Didn’t work — check the connection'));
+    });
+    return;
+  }
+  if (a === 'oura-unlink') { fn('oura-unlink').then(d => { if (!d.error) { cloud.me = d; state.local.wellness = null; saveLocal(); } render(); }); return; }
   if (a === 'google') {
     cloud.calBusy = true; render();
     fn('google-start', {return_to: location.origin + location.pathname}).then(d => {
@@ -3503,9 +3523,15 @@ document.addEventListener('pointerdown', ev => { if (ev.target.closest('.chip'))
 
 // Debug hook for local testing (busy/acts injection); harmless in production.
 // What add-ons (food.js) may use; nothing else in the app depends on them.
-window.TrainApp = {L, esc, kName, KINDS, fDur, fHours, effective, todayStr, DAYS, render, $, cloud, toast, icon, view, ymd, parseYmd, mondayOf, addDays, SPORTS, trainingSport, actSport, lang: () => lang, get state() { return state; }};
+window.TrainApp = {hrText, loadWellness, get wellness() { return state.local.wellness; }, L, esc, kName, KINDS, fDur, fHours, effective, todayStr, DAYS, render, $, cloud, toast, icon, view, ymd, parseYmd, mondayOf, addDays, SPORTS, trainingSport, actSport, lang: () => lang, get state() { return state; }};
 window.trainDebug = {get state() { return state; }, get cloud() { return cloud; }, push, briefs, contribution, hrAuto, thrAuto, ftpAuto, effThr, effFtp, hrWords, trainStatus, breakOf, synced, openChat, chatContext, openWizard, openOnboarding, onb, onbGo, hrTargets, hrText, wiz, rulesPlan, projectOutlook, outlookWeek, buildPlan, applyWeekPlan, makeWeekly, maybeWeekly, weeklyDue, planContext, proposalSheet, view, run, parse, onBusy, matchActs, render, persist, place, setBusy(wk, events) { state.local.busy[wk] = {at: Date.now(), events}; saveLocal(); onBusy(wk); }, setActs(list) { state.local.acts = {at: Date.now(), list, linked: true}; saveLocal(); for (const wk of Object.keys(state.weeks)) { const week = state.weeks[wk], before = snapshot(week), lines = matchActs(wk, week); if (lines.length) commit(wk, week, before, 'Garmin', lines); } render(); }};
 
+// Back from Oura's consent screen: #oura=ok or #oura=<reason>.
+const ouraBack = (location.hash.match(/oura=([\w-]+)/) || [])[1];
+if (ouraBack) {
+  history.replaceState(null, '', location.pathname + location.search);
+  setTimeout(() => toast(ouraBack === 'ok' ? L('Oura подключена', 'Oura connected') : ouraBack === 'denied' ? L('Доступ не выдан — Oura не подключена', 'No access granted — Oura not connected') : L('Oura не подключилась — попробуй ещё раз', 'Oura didn’t connect — try again')), 300);
+}
 // Back from Google's consent screen: #google=ok or #google=<reason>.
 const googleBack = (location.hash.match(/google=([\w-]+)/) || [])[1];
 if (googleBack) {
