@@ -229,11 +229,16 @@ function place(wk, week, opts = {}) {
   const ti = todayIdx(wk), D = DAYS();
   const movable = s => s.status === 'planned' && !s.locked && (s.day == null || s.day >= ti);
   const fixed = week.sessions.filter(s => !movable(s));
-  const todo = week.sessions.filter(movable).sort((a, b) => (b.anchor - a.anchor) || PRIORITY.indexOf(a.kind) - PRIORITY.indexOf(b.kind));
+  // A second session of a day goes last, so the day's own session keeps its place first.
+  const todo = week.sessions.filter(movable).sort((a, b) => (!!a.double - !!b.double) || (b.anchor - a.anchor) || PRIORITY.indexOf(a.kind) - PRIORITY.indexOf(b.kind));
+  // A ride that stood in for a long one goes back to being the long one: if there's room again (the trip is off), it returns whole.
+  for (const s of todo) if (s.sub && !(week.away || []).includes(s.pref) && pickSlot(windows(wk, s.pref, week), s.sub.min, s.tod) != null) { s.kind = s.sub.kind; delete s.double; s.min = s.sub.min; if (s.sub.detail) s.detail = s.sub.detail; else delete s.detail; delete s.sub; delete s.short; }
   for (const s of todo) { s._from = opts.fresh ? null : s.day; s._start = s.start; s.day = null; }
   const placed = [...fixed], rest = [];
   for (const s of todo) {
-    if (s._from != null && s._from >= ti && conflict(s.kind, s._from, placed) !== 'busyDay' && slotFree(windows(wk, s._from, week), s._start, s.min)) { s.day = s._from; s.start = s._start; placed.push(s); }
+    const c0 = s._from != null && s._from >= ti ? conflict(s.kind, s._from, placed) : 'past';
+    if (c0 !== 'past' && c0 !== 'busyDay' && c0 !== 'weekend' && slotFree(windows(wk, s._from, week), s._start, s.min)) { s.day = s._from; s.start = s._start; placed.push(s); }
+    else if (s.double && c0 === 'busyDay' && slotFree(freeAround(wk, s._from, week, placed), s._start, s.min)) { s.day = s._from; s.start = s._start; placed.push(s); } // a second session keeps its pair
     else rest.push(s);
   }
   const evening = toMin(state.prefs.evening);
@@ -282,9 +287,59 @@ function place(wk, week, opts = {}) {
       }
       if (done) break;
     }
+    if (!done && KINDS[s.kind].sport === 'bike') done = fitRide(wk, week, s, order, placed);
     if (!done) { s.day = null; s.start = null; s.why = L(`До конца недели нет окна на ${fDur(s.min)}`, `No ${fDur(s.min)} window left this week`); }
   }
   for (const s of week.sessions) { delete s._from; delete s._start; }
+}
+
+// His rule: a ride that doesn't fit still goes in. It takes the biggest window left (45+ min, not on a trip day); a long
+// ride on a weekday becomes up to 90 min with its quality part kept, or an easy spin when a hard day sits next to it
+// (rules 16, 31: cut easy volume first, keep the intensity; never turn the week into easy only, rule 33).
+// A day's free windows with the sessions already on it cut out, an hour clear on each side.
+function freeAround(wk, d, week, placed) {
+  let wins = windows(wk, d, week);
+  for (const o of placed) if (active(o) && o.day === d && o.start != null) {
+    const a = o.start - 60, z = o.start + o.min + 60;
+    wins = wins.flatMap(([x, y]) => z <= x || a >= y ? [[x, y]] : [[x, a], [z, y]].filter(([p, q]) => q - p >= 20));
+  }
+  return wins;
+}
+function fitRide(wk, week, s, order, placed) {
+  const D = DAYS(), orig = s.kind, origMin = s.short || s.min;
+  let best = null;
+  for (const d of order) {
+    if ((week.away || []).includes(d)) continue;
+    let kind = s.kind === 'bike_long' && d < 5 ? 'bike_q' : s.kind, c = conflict(kind, d, placed);
+    if (c === 'hardRow' || (KINDS[kind].hard && c === 'gymBefore')) { kind = 'bike_easy'; c = conflict(kind, d, placed); }
+    if (c === 'busyDay' || c === 'weekend') continue;
+    const w = windows(wk, d, week).slice().sort((x, y) => (y[1] - y[0]) - (x[1] - x[0]))[0];
+    if (!w || w[1] - w[0] < 45) continue;
+    if (!best || w[1] - w[0] > best.len) best = {d, kind, len: w[1] - w[0], c};
+  }
+  // Every free day taken: the ride goes in as a second session of a day, an easy one, an hour clear of the other session.
+  let dbl = false;
+  if (!best) for (const d of order) {
+    if ((week.away || []).includes(d)) continue;
+    const others = placed.filter(o => active(o) && o.day === d);
+    if (others.length !== 1 || others[0].start == null || KINDS[others[0].kind].sport === 'bike') continue;
+    const w = freeAround(wk, d, week, placed).sort((x, y) => (y[1] - y[0]) - (x[1] - x[0]))[0];
+    if (!w || w[1] - w[0] < 45) continue;
+    if (!best || w[1] - w[0] > best.len) best = {d, kind: 'bike_easy', len: w[1] - w[0], c: null, w};
+  }
+  if (!best) return false;
+  dbl = !!best.w;
+  const min = Math.min(s.min, best.kind !== s.kind ? 90 : s.min, Math.floor(best.len / 5) * 5);
+  s.day = best.d; s.start = dbl ? best.w[0] : pickSlot(windows(wk, best.d, week), min, s.tod) ?? null;
+  if (dbl) s.double = true; else delete s.double;
+  if (best.kind !== s.kind) {
+    s.sub = {kind: orig, min: origMin, ...(s.detail ? {detail: s.detail} : {})}; s.kind = best.kind; delete s.rule; delete s.block;
+    s.detail = best.kind === 'bike_q' ? L('Вместо длинной: Z2, в середине 2×12 мин sweet spot', 'Instead of the long ride: Z2 with 2×12 min sweet spot in the middle') : L('Вместо длинной: ровно Z2, каденс 85–95', 'Instead of the long ride: steady Z2, cadence 85–95');
+  }
+  if (min !== s.min) { s.short = s.short || s.min; s.min = min; }
+  s.why = L(`${kName(orig)} ${fDur(origMin)} не помещается — вел всё равно ставлю: ${D[best.d]}, ${fDur(min)}${dbl ? ', второй тренировкой дня' : ''}${best.c ? '. Заметь: ' + reasonText(best.c, D[best.d]) : ''}`, `${kName(orig)} ${fDur(origMin)} doesn’t fit — the ride still goes in: ${D[best.d]}, ${fDur(min)}${dbl ? ', as a second session that day' : ''}${best.c ? '. Heads-up: ' + reasonText(best.c, D[best.d]) : ''}`);
+  placed.push(s);
+  return true;
 }
 
 /* ---------- safety rules the planner applies, not just shows ---------- */
@@ -327,7 +382,8 @@ function guard(wk, week) {
       const fixedMin = week.sessions.filter(s => s.status === 'done' || (s.status === 'planned' && s.locked) || (s.status === 'planned' && s.day != null && s.day < ti)).reduce((t, s) => t + (s.act?.min ?? s.min), 0);
       let over = fixedMin + ahead.reduce((t, s) => t + s.min, 0) - capMin;
       if (over > 15) {
-        const order = [...ahead.filter(s => !isKey(s)), ...ahead.filter(isKey)].sort((a, b) => (isKey(a) - isKey(b)) || b.min - a.min);
+        // Rides aren't cut for the weekly cap (his rule: bike stays even over the limit); the comeback ramp still applies to them.
+        const order = [...ahead.filter(s => !isKey(s)), ...ahead.filter(isKey)].filter(s => ramp || KINDS[s.kind].sport !== 'bike').sort((a, b) => (isKey(a) - isKey(b)) || b.min - a.min);
         for (const s of order) {
           if (over <= 0) break;
           const floor = isKey(s) ? Math.round(s.min * 0.8 / 5) * 5 : s.kind === 'gym' || s.kind === 'climb' ? 45 : 30, cut = Math.min(over, s.min - floor);
@@ -484,12 +540,24 @@ function revary(wk, week) {
   const before = fresh.map(x => x.min); varySessions(wk, fresh); fresh.forEach((x, i) => { x.min = before[i]; }); // keep placed lengths
   week.varied = true; persist();
 }
+function rebalance(wk, week) {
+  if (week.rebal || wk < ymd(mondayOf(new Date()))) return;
+  week.rebal = true;
+  const before = snapshot(week), lines = [], away = week.away || [], D = DAYS();
+  for (const s of week.sessions) if (s.travel && s.status === 'planned' && !away.includes(s.day)) {
+    s.status = 'dropped'; lines.push(L(`${kName(s.kind)}${s.day != null ? ' (' + D[s.day] + ')' : ''}: лишняя короткая с поездки — убрал`, `${kName(s.kind)}${s.day != null ? ' (' + D[s.day] + ')' : ''}: an extra trip session — removed`));
+  }
+  const lost = week.sessions.filter(s => s.status === 'planned' && s.day == null && KINDS[s.kind].sport === 'bike');
+  if (lost.length) { place(wk, week); for (const s of lost) if (s.day != null) lines.push(whyText(s.why)); }
+  if (lines.length) week.log.unshift({at: new Date().toISOString(), text: L('баланс недели', 'week balance'), lines, snap: before});
+  persist();
+}
 function ensureWeek(wk) {
-  if (state.weeks[wk]) { revary(wk, state.weeks[wk]); return state.weeks[wk]; }
+  if (state.weeks[wk]) { revary(wk, state.weeks[wk]); rebalance(wk, state.weeks[wk]); return state.weeks[wk]; }
   if (todayIdx(wk) > 6) return null; // past weeks are not planned retroactively
   // A week first opened mid-way starts from today: days already gone are not back-filled.
   const ti = todayIdx(wk);
-  const week = {sessions: state.pause ? [] : varySessions(wk, templateFor().filter(t => t.day >= ti).map(newSession)), log: [], away: [], cal: {}, busySeen: !!state.local.busy[wk], varied: true, ...(state.pause ? {paused: true} : {})};
+  const week = {sessions: state.pause ? [] : varySessions(wk, templateFor().filter(t => t.day >= ti).map(newSession)), log: [], away: [], cal: {}, busySeen: !!state.local.busy[wk], varied: true, rebal: true, ...(state.pause ? {paused: true} : {})};
   place(wk, week, {fresh: true});
   if (!state.pause) {
     const before = snapshot(week), gl = guard(wk, week);
@@ -599,6 +667,21 @@ function commit(wk, week, before, text, lines, opts = {}) {
   if (capture) { capture.push(...all); return; }
   if (!opts.silent) lastChange = {wk, text, lines: all};
   render();
+}
+
+// A trip's short session goes to what the week lacks, among what a trip allows: a run only while the week has fewer than
+// two and none the day before or after (impact), else a strength circuit in the room, else mobility (rules 38, 40).
+const TRIP = {
+  run_easy: {min: 30, ru: 'Поездка: 20–30 мин лёгкого бега; нет времени — 10 мин мобильности', en: 'Trip: 20–30 min easy run; no time — 10 min mobility'},
+  gym: {min: 25, ru: 'Поездка: круговая без железа 20–25 мин — приседы, выпады, отжимания, планка, 3 круга', en: 'Trip: a 20–25 min no-equipment circuit — squats, lunges, push-ups, plank, 3 rounds'},
+  mobility: {min: 15, ru: 'Поездка: 10–20 мин мобильности', en: 'Trip: 10–20 min mobility'},
+};
+function tripKind(week, d, runOk) {
+  const act = week.sessions.filter(x => x.status === 'planned' || x.status === 'done');
+  const runs = act.filter(x => KINDS[x.kind].sport === 'run');
+  if (runOk && runs.length < 2 && !runs.some(x => x.day != null && Math.abs(x.day - d) <= 1)) return 'run_easy';
+  if (!act.some(x => x.kind === 'gym' && x.day != null && Math.abs(x.day - d) <= 1)) return 'gym';
+  return 'mobility';
 }
 
 /* ---------- commands in plain words ---------- */
@@ -792,17 +875,19 @@ function run(text) {
       range = range.filter(d => d >= ti && d <= 6);
       if (!range.length) return reply(text, [L('Какие дни? Например: «уезжаю пт–вс»', 'Which days? e.g. “away Fri–Sun”')]);
       week.away = [...new Set([...(week.away || []), ...range])].sort();
-      for (const s of week.sessions) if (s.status === 'planned' && range.includes(s.day)) { s.locked = false; s.day = null; }
+      for (const s of week.sessions) if (s.status === 'planned' && range.includes(s.day) && !s.travel) { s.locked = false; s.day = null; }
       lines.push(L(`${range.map(d => D[d]).join(', ')} — в поездке, тренировки оттуда убрал`, `${range.map(d => D[d]).join(', ')} — away, sessions moved out`));
       // A trip of 2+ days keeps short formats every other day, unless the person said no training (rule 38).
       if (range.length >= 2 && !/без трен|отдыха|отдыхаю|no training|rest/.test(t)) {
         const runOk = !gate().known || gate().max === 0;
         for (let k = 1; k < range.length; k += 2) {
-          const d = range[k], kind = runOk ? 'run_easy' : 'mobility';
-          const n = newSession({id: 'trip', kind, min: 30, day: d, tod: 'any', anchor: false, note: '', detail: L('Поездка: 20–30 мин лёгкого бега или зал отеля; нет времени — 10 мин мобильности', 'Trip: 20–30 min easy run or the hotel gym; no time — 10 min mobility')});
+          const d = range[k];
+          if (week.sessions.some(x => x.travel && x.day === d && x.status === 'planned')) continue; // it already has its short one
+          const kind = tripKind(week, d, runOk), tmin = TRIP[kind].min;
+          const n = newSession({id: 'trip', kind, min: tmin, day: d, tod: 'any', anchor: false, note: '', detail: L(TRIP[kind].ru, TRIP[kind].en)});
           n.day = d; n.locked = true; n.travel = true; n.why = L('Короткая тренировка в поездке — держит ритм, не нагружает (правило 38)', 'A short session on the trip keeps the rhythm without load (rule 38)');
           week.sessions.push(n);
-          lines.push(L(`${D[d]}: короткая — ${kName(kind).toLowerCase()} 30 мин, когда будет окно`, `${D[d]}: a short one — ${kName(kind).toLowerCase()} 30 min, whenever there’s a gap`));
+          lines.push(L(`${D[d]}: короткая — ${kName(kind).toLowerCase()} ${fDur(tmin)}, когда будет окно`, `${D[d]}: a short one — ${kName(kind).toLowerCase()} ${fDur(tmin)}, whenever there’s a gap`));
         }
       }
       // Away sessions keep their old day as "from" so the log explains the move.
@@ -1360,7 +1445,7 @@ function planContext(mode, t) {
   const p = state.prefs, cur = ymd(mondayOf(new Date()));
   const ctx = {
     today: {date: todayStr(), weekday: DAYS_RU[(new Date().getDay() + 6) % 7]},
-    target: {monday: t.wk, from_day: DAYS_RU[t.from]},
+    target: {monday: t.wk, from_day: DAYS_RU[t.from], ...((state.weeks[t.wk]?.away || []).length ? {away_days: state.weeks[t.wk].away.map(d => DAYS_RU[d]), away_note: 'в эти дни человек в поездке: тренировок туда не ставь, длинную — в другой день или короче'} : {})},
     time: {weekdays: `${p.wdStart}–${p.wdEnd}`, weekends: `${p.weStart}–${p.weEnd}`, evening_from: p.evening, work: p.work ? `${p.workStart}–${p.workEnd} по будням` : 'не учитываю'},
     calendar_busy: busyCtx(t.wk),
     history: histCtx(),
@@ -1671,7 +1756,7 @@ function acceptPlan() {
   const a = wiz.a, t = r.target;
   const prev = JSON.stringify({plan: state.plan, template: state.template, asks: state.asks, planSkip: state.planSkip || null, prop: state.proposals[t.wk] || null});
   state.plan = {goal: a.goal, sports: a.sports, days: a.days, hours: a.hours, notes: a.notes, eventDate: a.eventDate, eventName: a.eventName, at: isoNow(), by: r.by, summary: r.summary, rationale: r.rationale, start: t.wk, outlook: r.outlook};
-  if (r.base?.length) state.template = r.base.map(x => ({id: 't-' + rid(), kind: x.kind, day: x.day, tod: x.tod, min: x.min, anchor: false, note: '', ...(x.detail ? {detail: x.detail} : {}), ...(x.key ? {key: true} : {})}));
+  if (r.base?.length) { state.template = r.base.map(x => ({id: 't-' + rid(), kind: x.kind, day: x.day, tod: x.tod, min: x.min, anchor: false, note: '', ...(x.detail ? {detail: x.detail} : {}), ...(x.key ? {key: true} : {})})); dropUntouched(t.wk); }
   // The sports were just chosen: no "4 weeks without…" questions about them for a month.
   state.asks = Object.fromEntries(a.sports.map(sp => [sp, {c: 'keep', at: todayStr()}]));
   delete state.planSkip;
@@ -1744,6 +1829,38 @@ function acceptProposal(wk) {
   if (applyWeekPlan(wk, {...p, by: 'ai'}, L('план недели от ассистента', 'assistant’s week plan'))) { p.status = 'applied'; state.weeks[wk].log[0].prop = true; persist(); }
 }
 // The plan's cards on the week screen: build a plan (once), next week's proposal, or a manual "build this week".
+// What the week gives against the plan, checked after it's laid out (like SafeRun's constraints): the plan's main sport
+// is in it, at least one key session unless it's an easy week (rule 33), no more than two hard ones (rule 2).
+// Shown only when something is off, as one quiet line.
+const SPORT_GEN = {bike: ['вела', 'riding'], run: ['бега', 'running'], swim: ['плавания', 'swimming']};
+function balanceLines(wk, week) {
+  if (!week || state.pause || !state.plan || week.paused) return [];
+  const ss = week.sessions.filter(s => (s.status === 'planned' && s.day != null) || s.status === 'done');
+  const by = {}, tmpl = {};
+  for (const s of ss) { const sp = KINDS[s.kind].sport; by[sp] = (by[sp] || 0) + (s.act?.min ?? s.min); }
+  for (const t of state.template) { const sp = KINDS[t.kind].sport; tmpl[sp] = (tmpl[sp] || 0) + t.min; }
+  const main = Object.entries(tmpl).filter(([sp]) => SPORT_GEN[sp]).sort((a, b) => b[1] - a[1])[0]?.[0];
+  const phase = outlookWeek(wk)?.phase, out = [];
+  if (main && !by[main] && ss.length >= 2) out.push(L(`нет ${SPORT_GEN[main][0]}, а по плану это главный вид`, `no ${SPORT_GEN[main][1]}, the plan's main sport`));
+  const keys = ss.filter(isKey).length, hard = ss.filter(s => KINDS[s.kind].hard).length;
+  if (!keys && ss.length >= 3 && phase !== 'deload' && phase !== 'taper') out.push(L('ни одной ключевой — лучше оставить одну короткую качественную (правило 33)', 'no key session — better keep one short quality one (rule 33)'));
+  if (hard > 2) out.push(L(`тяжёлых ${hard}, по умолчанию не больше двух (правило 2)`, `${hard} hard sessions; two is the default ceiling (rule 2)`));
+  return out;
+}
+function balanceHTML(wk, week, ti) {
+  if (ti > 6) return '';
+  const b = balanceLines(wk, week);
+  return b.length ? `<div class="nudge quiet-nudge"><span>${L('Баланс недели', 'Week balance')}: ${esc(b.join('; '))}</span></div>` : '';
+}
+// A new usual week rebuilds the weeks after the first one that nobody touched: no trip, no assistant plan, nothing
+// moved, done or answered by hand. They come back from the new usual week the next time they're opened.
+function dropUntouched(after) {
+  for (const [w, x] of Object.entries(state.weeks)) {
+    if (w <= after || x.planBy || (x.away || []).length || Object.keys(x.cal || {}).length) continue;
+    if (x.sessions.some(s => s.locked || s.status !== 'planned') || (x.log || []).length > 1) continue;
+    delete state.weeks[w];
+  }
+}
 function planCardsHTML(wk) {
   const cur = ymd(mondayOf(new Date())), nwk = nextMonday();
   if (!state.plan) {
@@ -2532,6 +2649,7 @@ function weekHTML() {
   h += pauseRpeHTML(wk, ti);
   h += alertsHTML(wk);
   h += planCardsHTML(wk);
+  h += balanceHTML(wk, week, ti);
   h += painLine();
   h += window.TrainFood?.weekRow(wk, week, ti) || '';
   h += cardsHTML(wk, week);
@@ -2562,9 +2680,15 @@ function dayWord(wk, d, ti) {
   if (d === ti + 1) return L('Завтра', 'Tomorrow');
   const w = DAY_FULL()[d]; return `${w[0].toUpperCase()}${w.slice(1)}, ${addDays(parseYmd(wk), d).getDate()}`;
 }
-function dayTimeline(wk, d, ti, items) {
+// drag: the session whose block can be dragged along the line to change its time (the next-session card).
+function dayTimeline(wk, d, ti, items, drag) {
   const marks = [9, 12, 18].map(h2 => `<span style="left:${pct(h2 * 60)}%">${h2}</span>`).join('');
-  return `<div class="tl" aria-hidden="true">${blocks(wk, d).map(b => `<i class="${b.work ? 'w' : 'b'}" style="left:${pct(b.s)}%;width:${pct(b.e) - pct(b.s)}%"></i>`).join('')}${items.map(x => `<i class="${x.cls}" style="left:${pct(x.s)}%;width:${Math.max(1, pct(x.s + x.min) - pct(x.s))}%"></i>`).join('')}${d === ti ? `<i class="now" style="left:${pct(nowMin())}%"></i>` : ''}</div><div class="tl-marks num" aria-hidden="true">${marks}</div>`;
+  const tl = dayLine(wk, d, ti, items, drag);
+  if (!drag) return tl + `<div class="tl-marks num" aria-hidden="true">${marks}</div>`;
+  return `<div class="tl-hit" data-drag="${drag.id}" data-wk="${wk}" role="slider" tabindex="0" aria-label="${esc(L('Время тренировки', 'Session time'))}" aria-valuemin="${TL_FROM}" aria-valuemax="${TL_TO - drag.min}" aria-valuenow="${drag.start}" aria-valuetext="${hm(drag.start)}">${tl}</div><div class="tl-marks num" aria-hidden="true">${marks}</div><p class="tl-hint">${L('Потяни полоску влево или вправо, чтобы сменить время', 'Drag the bar left or right to change the time')}</p>`;
+}
+function dayLine(wk, d, ti, items, drag) {
+  return `<div class="tl" aria-hidden="true">${blocks(wk, d).map(b => `<i class="${b.work ? 'w' : 'b'}" style="left:${pct(b.s)}%;width:${pct(b.e) - pct(b.s)}%"></i>`).join('')}${items.map(x => `<i class="${x.cls}${drag ? ' knob' : ''}" style="left:${pct(x.s)}%;width:${Math.max(1, pct(x.s + x.min) - pct(x.s))}%"></i>`).join('')}${d === ti ? `<i class="now" style="left:${pct(nowMin())}%"></i>` : ''}</div>`;
 }
 function heroHTML(wk, week, effs, ti) {
   const s = nextUp(effs, ti);
@@ -2583,7 +2707,7 @@ function heroHTML(wk, week, effs, ti) {
     <div class="hero-meta">${fDur(s.min)} · ${esc(sDetail(s))}</div>
     ${s.was ? `<div class="hero-why">${L('Вместо', 'Instead of')} ${esc(kName(s.was).toLowerCase())}: ${esc(why)}</div>` : why ? `<div class="hero-why">${esc(why)}</div>` : ''}
     ${s.caution ? `<div class="hero-why warn">${esc(s.caution)}</div>` : ''}
-    ${s.start != null ? dayTimeline(wk, s.day, ti, [{cls: `s ${sp}`, s: s.start, min: s.min}]) : ''}
+    ${s.start != null ? dayTimeline(wk, s.day, ti, [{cls: `s ${sp}`, s: s.start, min: s.min}], {id: s.id, start: s.start, min: s.min}) : ''}
     <div class="hero-acts">${acts}</div></section>`;
 }
 // Done time as segments in each sport's colour, against the plan.
@@ -3310,6 +3434,50 @@ async function icsFile(file) {
 }
 
 /* ---------- events ---------- */
+// Drag the next session along its day line: 15-minute steps, inside the line's hours, not before now on today.
+// The eyebrow's time follows the finger; letting go saves it as your own time (locked, undoable). Arrows step 15 min.
+const tdrag = {el: null, s: null, wk: null, x0: 0, start0: 0, start: 0, moved: false};
+function tlFind(el) { const wk = el.dataset.wk, s = state.weeks[wk]?.sessions.find(x => x.id === el.dataset.drag); return s ? {wk, s} : null; }
+function tlClamp(wk, s, m) {
+  const lo = s.day === todayIdx(wk) ? Math.max(TL_FROM, Math.ceil(nowMin() / 15) * 15) : TL_FROM;
+  return Math.max(lo, Math.min(TL_TO - s.min, Math.round(m / 15) * 15));
+}
+function tlShow(el, s, m) {
+  const k = el.querySelector('.knob'); if (k) k.style.left = pct(m) + '%';
+  el.setAttribute('aria-valuenow', m); el.setAttribute('aria-valuetext', hm(m));
+  const eb = el.closest('.hero')?.querySelector('.hero-eyebrow'); if (eb) eb.textContent = eb.textContent.replace(/\d{1,2}:\d{2}$/, hm(m));
+}
+function tlSave(wk, s, from, to) {
+  if (to === from) return;
+  const week = state.weeks[wk], before = snapshot(week), D = DAYS();
+  s.start = to; s.locked = true; s.why = L(`Ты сдвинул на ${hm(to)}`, `You moved it to ${hm(to)}`);
+  const clash = blocks(wk, s.day).find(b => b.s < to + s.min && b.e > to);
+  const lines = [L(`${kName(s.kind)}: ${D[s.day]} ${hm(from)} → ${hm(to)}`, `${kName(s.kind)}: ${D[s.day]} ${hm(from)} → ${hm(to)}`)];
+  if (clash) lines.push(L(`Заметь: пересекается с «${clash.title}». Решать тебе — оставил`, `Heads-up: overlaps “${clash.title}”. Your call — kept it`));
+  commit(wk, week, before, L('время тренировки', 'session time'), lines);
+}
+document.addEventListener('pointerdown', ev => {
+  const el = ev.target.closest?.('.tl-hit'); if (!el) return;
+  const f = tlFind(el); if (!f) return;
+  Object.assign(tdrag, {el, s: f.s, wk: f.wk, x0: ev.clientX, start0: f.s.start, start: f.s.start, moved: false});
+  el.setPointerCapture?.(ev.pointerId); el.classList.add('dragging');
+});
+document.addEventListener('pointermove', ev => {
+  if (!tdrag.el) return;
+  const w = tdrag.el.querySelector('.tl').getBoundingClientRect().width || 1;
+  const m = tlClamp(tdrag.wk, tdrag.s, tdrag.start0 + (ev.clientX - tdrag.x0) / w * (TL_TO - TL_FROM));
+  if (Math.abs(ev.clientX - tdrag.x0) > 4) tdrag.moved = true;
+  if (m !== tdrag.start) { tdrag.start = m; tlShow(tdrag.el, tdrag.s, m); }
+});
+const tlEnd = () => { const t = tdrag; if (!t.el) return; t.el.classList.remove('dragging'); t.el = null; if (t.moved) tlSave(t.wk, t.s, t.start0, t.start); };
+document.addEventListener('pointerup', tlEnd); document.addEventListener('pointercancel', tlEnd);
+document.addEventListener('keydown', ev => {
+  const el = ev.target.closest?.('.tl-hit'); if (!el || (ev.key !== 'ArrowLeft' && ev.key !== 'ArrowRight')) return;
+  const f = tlFind(el); if (!f) return;
+  ev.preventDefault();
+  tlSave(f.wk, f.s, f.s.start, tlClamp(f.wk, f.s, f.s.start + (ev.key === 'ArrowRight' ? 15 : -15)));
+});
+
 // Swipe a nudge to the left to hide it for good (it stays reachable in Settings). Pointer events: finger and mouse.
 const sw = {el: null, x: 0, dx: 0, moved: false};
 document.addEventListener('pointerdown', ev => { const el = ev.target.closest?.('.swipe'); if (!el) return; sw.el = el; sw.x = ev.clientX; sw.dx = 0; sw.moved = false; });
@@ -3485,8 +3653,8 @@ document.addEventListener('click', ev => {
     return;
   }
   if (a === 'cal-remove') { fn('cal-remove', {id: el.dataset.id}).then(d => { if (!d.error) { cloud.cals = d.calendars; for (const k of Object.keys(state.local.busy)) state.local.busy[k].at = 0; saveLocal(); render(); } }); return; }
-  if (a === 'tpl-del') { state.template.splice(+el.dataset.i, 1); persist(); render(); return; }
-  if (a === 'tpl-add') { state.template.push({id: 't-' + rid(), kind: 'run_easy', day: 4, tod: 'pm', min: 45, anchor: false, note: ''}); persist(); render(); return; }
+  if (a === 'tpl-del') { state.template.splice(+el.dataset.i, 1); dropUntouched(ymd(mondayOf(new Date()))); persist(); render(); return; }
+  if (a === 'tpl-add') { state.template.push({id: 't-' + rid(), kind: 'run_easy', day: 4, tod: 'pm', min: 45, anchor: false, note: ''}); dropUntouched(ymd(mondayOf(new Date()))); persist(); render(); return; }
   if (a === 'rebuild') {
     const week = state.weeks[wk]; if (!week) return;
     const before = snapshot(week), ti = todayIdx(wk);
@@ -3520,7 +3688,7 @@ document.addEventListener('change', ev => {
     const tpl = state.template[+el.dataset.tpl], f = el.dataset.f;
     if (f === 'day') tpl.day = +el.value; else if (f === 'min') tpl.min = Math.max(15, Math.min(480, +el.value || 45));
     else if (f === 'anchor') tpl.anchor = el.checked; else if (f === 'kind') { tpl.kind = el.value; tpl.min = KINDS[el.value].min; delete tpl.detail; delete tpl.key; render(); } else tpl[f] = el.value;
-    persist(); return;
+    dropUntouched(ymd(mondayOf(new Date()))); persist(); return;
   }
   if (el.dataset.hrz != null) {
     const h = {...(state.zones?.hr || {})}, b = (h.b || [0, 0, 0, 0]).slice();
@@ -3589,7 +3757,7 @@ document.addEventListener('pointerdown', ev => { if (ev.target.closest('.chip'))
 // Debug hook for local testing (busy/acts injection); harmless in production.
 // What add-ons (food.js) may use; nothing else in the app depends on them.
 window.TrainApp = {hrText, loadWellness, get wellness() { return state.local.wellness; }, L, esc, kName, KINDS, fDur, fHours, effective, todayStr, DAYS, render, $, cloud, toast, icon, view, ymd, parseYmd, mondayOf, addDays, SPORTS, trainingSport, actSport, lang: () => lang, get state() { return state; }};
-window.trainDebug = {get state() { return state; }, varySessions, ensureWeek, get cloud() { return cloud; }, push, briefs, contribution, hrAuto, thrAuto, ftpAuto, effThr, effFtp, hrWords, trainStatus, breakOf, synced, openChat, chatContext, openWizard, openOnboarding, onb, onbGo, hrTargets, hrText, wiz, rulesPlan, projectOutlook, outlookWeek, buildPlan, applyWeekPlan, makeWeekly, maybeWeekly, weeklyDue, planContext, proposalSheet, view, run, parse, onBusy, matchActs, render, persist, place, setBusy(wk, events) { state.local.busy[wk] = {at: Date.now(), events}; saveLocal(); onBusy(wk); }, setActs(list) { state.local.acts = {at: Date.now(), list, linked: true}; saveLocal(); for (const wk of Object.keys(state.weeks)) { const week = state.weeks[wk], before = snapshot(week), lines = matchActs(wk, week); if (lines.length) commit(wk, week, before, 'Garmin', lines); } render(); }};
+window.trainDebug = {get state() { return state; }, varySessions, ensureWeek, place, guard, balanceLines, tripKind, run, get cloud() { return cloud; }, push, briefs, contribution, hrAuto, thrAuto, ftpAuto, effThr, effFtp, hrWords, trainStatus, breakOf, synced, openChat, chatContext, openWizard, openOnboarding, onb, onbGo, hrTargets, hrText, wiz, rulesPlan, projectOutlook, outlookWeek, buildPlan, applyWeekPlan, makeWeekly, maybeWeekly, weeklyDue, planContext, proposalSheet, view, run, parse, onBusy, matchActs, render, persist, place, setBusy(wk, events) { state.local.busy[wk] = {at: Date.now(), events}; saveLocal(); onBusy(wk); }, setActs(list) { state.local.acts = {at: Date.now(), list, linked: true}; saveLocal(); for (const wk of Object.keys(state.weeks)) { const week = state.weeks[wk], before = snapshot(week), lines = matchActs(wk, week); if (lines.length) commit(wk, week, before, 'Garmin', lines); } render(); }};
 
 // Back from Oura's consent screen: #oura=ok or #oura=<reason>.
 const ouraBack = (location.hash.match(/oura=([\w-]+)/) || [])[1];

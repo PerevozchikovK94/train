@@ -552,3 +552,8 @@ button.pg-week{width:100%;text-align:left;background:none;padding:2px 0;cursor:p
 
 .nav-btn:disabled{opacity:.3;cursor:default}
 .nudge.swipe{touch-action:pan-y;transition:transform .2s,opacity .2s;user-select:none}
+.tl-hit{padding:14px 0 2px;margin:-14px 0 0;touch-action:none;cursor:grab;outline-offset:4px}
+.tl-hit.dragging{cursor:grabbing}
+.tl-hit .knob{box-shadow:0 0 0 2px color-mix(in srgb,var(--ink) 25%,transparent);transition:left .08s}
+.tl-hit.dragging .knob{transition:none;box-shadow:0 0 0 3px var(--c,var(--accent))}
+.tl-hint{margin:2px 0 0;font-size:12px;color:var(--muted)}
