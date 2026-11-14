@@ -55,6 +55,33 @@
       toast(L(`+${data.total.kcal} ккал · Б ${data.total.p} · Ж ${data.total.f} · У ${data.total.c}`, `+${data.total.kcal} kcal · P ${data.total.p} · F ${data.total.f} · C ${data.total.c}`));
     } finally { busy.on = false; fabRender(); render(); }
   }
+  // Editing a logged meal: grams per item (macros scale with them), drop an item, or say what's wrong in words —
+  // the estimate is redone from the saved items plus the correction (the photo isn't kept, so it isn't sent again).
+  let edit = null;
+  const mealOf = () => edit && F.log[edit.date]?.m?.[edit.i];
+  function retotal(m) {
+    const t = m.items.reduce((a, x) => ({kcal: a.kcal + x.kcal, p: a.p + x.p, f: a.f + x.f, c: a.c + x.c}), {kcal: 0, p: 0, f: 0, c: 0});
+    Object.assign(m, t, {name: m.items.map(x => x.name).join(', ').slice(0, 80) || m.name});
+  }
+  function editHTML(m) {
+    const items = m.items || [];
+    return `<div class="fedit">
+      ${items.length ? `<div class="fedit-items">${items.map((x, j) => `<div class="fedit-it"><span class="fedit-n">${esc(x.name)}<span class="muted">${fmt(x.kcal)} ${L('ккал', 'kcal')} · ${L('Б', 'P')} ${x.p}</span></span><label class="fedit-g"><input data-food="it-g" data-j="${j}" type="number" inputmode="numeric" min="0" max="3000" step="5" value="${x.grams}" aria-label="${esc(x.name)}, ${L('граммы', 'grams')}"><span class="muted">${L('г', 'g')}</span></label><button class="nav-btn frow-x" data-a="food-it-del" data-j="${j}" aria-label="${L('Убрать', 'Remove')} ${esc(x.name)}">✕</button></div>`).join('')}</div>` : ''}
+      <form id="foodFix" class="fedit-fix"><input name="fix" maxlength="300" autocomplete="off" placeholder="${L('Что не так? Например: «не масло, а плавленый сыр»', 'What’s off? e.g. “not butter — processed cheese”')}"><button class="btn sm primary" ${busy.on ? 'disabled' : ''}>${busy.on ? L('Считаю…', 'Estimating…') : L('Пересчитать', 'Redo')}</button></form>
+      <button class="btn link" data-a="food-m-edit" data-i="${edit.i}">${L('Готово', 'Done')}</button></div>`;
+  }
+  async function fixMeal(text) {
+    const m = mealOf(); if (!m || busy.on || !cloud.client || !cloud.user) return;
+    busy.on = true; render();
+    try {
+      const prev = (m.items || []).map(x => ({name: x.name, grams: x.grams, kcal: x.kcal, p: x.p, f: x.f, c: x.c}));
+      const {data, error} = await cloud.client.functions.invoke('train-food', {body: {text, prev, lang: TrainApp.lang()}});
+      let err = null; if (error) { try { err = (await error.context?.json?.())?.error; } catch {} err = err || 'unavailable'; }
+      if (err || !data?.items?.length) { toast(err === 'limit' ? L('Лимит ассистента на сегодня исчерпан', 'Today’s assistant limit is used up') : L('Не получилось пересчитать — попробуй ещё раз', 'Couldn’t redo it — try again')); return; }
+      m.items = data.items; m.note = data.comment; m.conf = data.confidence; m.fixed = true; retotal(m);
+      save(); toast(L(`Пересчитал: ${data.total.kcal} ккал · Б ${data.total.p}`, `Redone: ${data.total.kcal} kcal · P ${data.total.p}`));
+    } finally { busy.on = false; render(); }
+  }
   function save() {
     F.at = Date.now();
     try { localStorage.setItem(KEY, JSON.stringify(F)); } catch {}
@@ -156,7 +183,7 @@
       h += `<button class="dchip" role="tab" data-a="food-goto" data-d="${dd}" aria-selected="${dd === date}"><span>${i === 0 ? L('сег', 'tod') : DAYS()[(dt.getDay() + 6) % 7]}</span><b>${dt.getDate()}</b><i><em style="width:${t && e.kcal ? Math.min(100, e.kcal / t.kcal * 100).toFixed(0) : 0}%"></em></i></button>`;
     }
     h += `</div>`;
-    if ((d.m || []).length) h += `<div class="list flog">${d.m.map((m, i) => `<div class="row frow"><span class="frow-t muted">${new Date(m.at).toLocaleTimeString(L('ru-RU', 'en-GB'), {hour: '2-digit', minute: '2-digit'})}</span><span class="t"><b>${esc(m.name)}</b><span>${L('Б', 'P')} ${m.p} · ${L('Ж', 'F')} ${m.f} · ${L('У', 'C')} ${m.c}${m.conf === 'low' ? L(' · оценка грубая', ' · rough estimate') : ''}${m.src === 'photo' ? L(' · по фото', ' · from a photo') : ''}</span></span><span class="v"><b>${fmt(m.kcal)}</b><span>${L('ккал', 'kcal')}</span></span><button class="nav-btn frow-x" data-a="food-m-del" data-i="${i}" aria-label="${L('Удалить', 'Delete')}">✕</button></div>`).join('')}</div>`;
+    if ((d.m || []).length) h += `<div class="list flog">${d.m.map((m, i) => `<div class="row frow${edit?.date === date && edit.i === i ? ' on' : ''}"><span class="frow-t muted">${new Date(m.at).toLocaleTimeString(L('ru-RU', 'en-GB'), {hour: '2-digit', minute: '2-digit'})}</span><button class="t frow-e" data-a="food-m-edit" data-i="${i}" aria-expanded="${edit?.date === date && edit.i === i}"><b>${esc(m.name)}</b><span>${L('Б', 'P')} ${m.p} · ${L('Ж', 'F')} ${m.f} · ${L('У', 'C')} ${m.c}${m.conf === 'low' ? L(' · оценка грубая', ' · rough estimate') : ''}${m.src === 'photo' ? L(' · по фото', ' · from a photo') : ''}${m.fixed ? L(' · поправлено', ' · corrected') : ''}</span></button><span class="v"><b>${fmt(m.kcal)}</b><span>${L('ккал', 'kcal')}</span></span><button class="nav-btn frow-x" data-a="food-m-del" data-i="${i}" aria-label="${L('Удалить', 'Delete')}">✕</button></div>${edit?.date === date && edit.i === i ? editHTML(m) : ''}`).join('')}</div>`;
     else h += `<div class="flog-empty"><b>${isToday ? L('Сегодня пока ничего', 'Nothing yet today') : L('За этот день записей нет', 'Nothing logged that day')}</b><span class="muted">${L('Сфоткай тарелку или опиши — кнопка «+ Еда» внизу.', 'Snap your plate or describe it — «+ Meal» below.')}</span></div>`;
     h += `<div class="quickp"><span class="muted">${L('Быстро: белок', 'Quick: protein')}</span>${[20, 30, 40].map(g => `<button class="chip" data-a="food-p" data-g="${g}">+${g} ${L('г', 'g')}</button>`).join('')}${(d.p || []).length ? `<button class="chip" data-a="food-p-undo" aria-label="${L('Отменить последнее', 'Undo last')}">↶</button>` : ''}</div>`;
     if (supps.length) h += `<div class="section-title">${L('Добавки', 'Supplements')} · ${supps.filter(x => d.s?.[x.id]).length}/${supps.length}</div><div class="supps">${supps.map(x => `<button class="supp" data-a="food-s" data-id="${esc(x.id)}" aria-pressed="${!!d.s?.[x.id]}"><span class="supp-ck">${d.s?.[x.id] ? '✓' : ''}</span><span><b>${esc(x.name)}</b>${x.dose ? `<span class="muted">${esc(x.dose)}</span>` : ''}</span></button>`).join('')}</div>`;
@@ -378,16 +405,25 @@
       toast(L(`+${m.kcal} ккал · ${m.name}`, `+${m.kcal} kcal · ${m.name}`)); return true;
     }
     if (a === 'food-fab') { fabOpen = !fabOpen; fabRender(); if (fabOpen) setTimeout(() => $('#foodTextIn')?.focus(), 50); return true; }
-    if (a === 'food-m-del') { day(curDay()).m.splice(+el.dataset.i, 1); save(); return true; }
+    if (a === 'food-m-del') { day(curDay()).m.splice(+el.dataset.i, 1); edit = null; save(); return true; }
+    if (a === 'food-m-edit') { const i = +el.dataset.i, date = curDay(); edit = edit && edit.date === date && edit.i === i ? null : {date, i}; render(); if (edit) setTimeout(() => document.querySelector('.fedit')?.scrollIntoView({block: 'nearest', behavior: 'smooth'}), 30); return true; }
+    if (a === 'food-it-del') { const m = mealOf(); if (m) { m.items.splice(+el.dataset.j, 1); if (!m.items.length) { F.log[edit.date].m.splice(edit.i, 1); edit = null; } else { m.fixed = true; retotal(m); } save(); } return true; }
     if (a === 'food-s-del') { F.supps.splice(+el.dataset.i, 1); save(); return true; }
     return false;
   }
   function change(el) {
     if (el.dataset?.food === 'photo' && el.files?.[0]) { shrink(el.files[0]).then(image => estimate({image})).catch(() => toast(L('Не открылось фото', 'Couldn’t open the photo'))); el.value = ''; return true; }
+    if (el.dataset?.food === 'it-g') {
+      const m = mealOf(), x = m?.items?.[+el.dataset.j], g = Math.max(0, Math.min(3000, Math.round(+el.value || 0)));
+      if (!x || g === x.grams) return true;
+      const k = x.grams > 0 ? g / x.grams : 0, r = v => Math.round(v * k);
+      Object.assign(x, {grams: g, kcal: r(x.kcal), p: r(x.p), f: r(x.f), c: r(x.c)}); m.fixed = true; retotal(m); save(); return true;
+    }
     if (el.dataset?.food !== 'weight') return false;
     const v = Math.round(+String(el.value).replace(',', '.') * 2) / 2; F.weight = v >= 35 && v <= 200 ? v : null; save(); return true;
   }
   document.addEventListener('submit', ev => {
+    if (ev.target.id === 'foodFix') { ev.preventDefault(); const t = (ev.target.querySelector('input')?.value || '').trim(); if (t) fixMeal(t); return; }
     if (ev.target.id === 'foodText') { ev.preventDefault(); const t = (ev.target.querySelector('input')?.value || '').trim(); if (t) estimate({text: t}); return; }
     if (ev.target.id !== 'suppForm') return;
     ev.preventDefault();
@@ -445,6 +481,14 @@
 .frow .t span{white-space:normal}
 .frow .v span{font-size:12px}
 .frow-x{min-height:28px;padding:0;color:var(--muted);justify-content:center}
+.frow-e{display:flex;flex-direction:column;align-items:flex-start;text-align:left;min-width:0;background:none;padding:0;color:inherit;font:inherit}
+.frow.on{background:var(--fill)}
+.fedit{padding:10px 12px 12px;border-top:1px solid var(--line, color-mix(in srgb,var(--ink) 8%,transparent));background:var(--fill)}
+.fedit-items{display:flex;flex-direction:column;gap:8px;margin-bottom:10px}
+.fedit-it{display:grid;grid-template-columns:1fr auto 28px;gap:8px;align-items:center}
+.fedit-n{display:flex;flex-direction:column;font-size:15px}.fedit-n .muted{font-size:12px}
+.fedit-g{display:flex;align-items:center;gap:4px}.fedit-g input{width:72px;text-align:right;min-height:40px}
+.fedit-fix{display:flex;gap:8px}.fedit-fix input{flex:1;min-width:0;min-height:44px}
 .flog-empty{display:flex;flex-direction:column;gap:4px;padding:18px;border:1.5px dashed var(--line);border-radius:14px;text-align:center}
 .stats-screen{padding-bottom:60px}
 .today-screen{padding-bottom:120px}.tday-eyebrow{font-size:13px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px}
