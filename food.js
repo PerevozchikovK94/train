@@ -597,6 +597,6 @@
     if (on() !== wasOn) { wasOn = on(); if (wasOn && !opened && TrainApp.view.v === 'week') { TrainApp.view.v = 'today'; TrainApp.loadWellness?.(); } opened = true; render(); }
     const want = on() && !document.querySelector('.settings') && TrainApp.view.v !== 'stats'; if (fab.hidden === want) fabRender();
   }, 400);
-  window.TrainFood = {weekRow, screen, tabs, settings, workoutFuel, briefLine, click, change, fabRender, get data() { return F; }};
+  window.TrainFood = {weekRow, screen, tabs, settings, workoutFuel, briefLine, click, change, fabRender, get data() { return F; }, estimate, fixMeal, targets}; // the last three for tests
   render();
 })();
