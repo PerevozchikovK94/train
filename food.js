@@ -434,6 +434,8 @@
   const css = document.createElement('style');
   css.textContent = `.food-fab{position:fixed;right:max(16px,env(safe-area-inset-right,0px));bottom:calc(var(--tab, 64px) + 16px + env(safe-area-inset-bottom,0px));z-index:6;display:flex;flex-direction:column;align-items:flex-end;gap:8px}
 .food-fab-btn{min-height:52px;min-width:52px;padding:0 18px;border-radius:26px;background:var(--accent);color:var(--bg);font-weight:600;font-size:16px;box-shadow:0 6px 20px rgba(0,0,0,.25)}
+.food-fab-btn.close{background:var(--danger);color:#fff}
+.food-ph{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .food-fab-panel{background:var(--bg);border:1px solid var(--line);border-radius:16px;padding:12px;display:flex;flex-direction:column;gap:8px;width:min(320px,calc(100vw - 32px));box-shadow:0 10px 30px rgba(0,0,0,.3)}
 .tabs3{display:grid;grid-template-columns:repeat(4,1fr);background:var(--fill);border-radius:12px;padding:3px;margin:6px 0 4px}
 .tabs3 button{min-height:36px;border-radius:9px;font-size:15px;font-weight:600;color:var(--ink-2)}
@@ -585,9 +587,9 @@
     fab.hidden = !on() || !!document.querySelector('.settings') || TrainApp.view.v === 'stats';
     fab.classList.toggle('low', !!$('#cmd')?.hidden);
     const rep = fabOpen ? frequent(8) : [];
-    fab.innerHTML = fabOpen ? `<div class="food-fab-panel">${rep.length ? `<div class="rep-h muted">${L('Повторить', 'Again')}</div><div class="rep">${rep.map((m, i) => `<button class="chip" data-a="food-rep" data-i="${i}">${esc(m.name.length > 28 ? m.name.slice(0, 27) + '…' : m.name)} <span class="muted num">${fmt(m.kcal)}</span></button>`).join('')}</div>` : ''}<label class="btn primary">${L('Сфоткать', 'Take a photo')}<input type="file" accept="image/*" capture="environment" data-food="photo" hidden></label>
+    fab.innerHTML = fabOpen ? `<div class="food-fab-panel">${rep.length ? `<div class="rep-h muted">${L('Повторить', 'Again')}</div><div class="rep">${rep.map((m, i) => `<button class="chip" data-a="food-rep" data-i="${i}">${esc(m.name.length > 28 ? m.name.slice(0, 27) + '…' : m.name)} <span class="muted num">${fmt(m.kcal)}</span></button>`).join('')}</div>` : ''}<div class="food-ph"><label class="btn primary">${L('Сфоткать', 'Take a photo')}<input type="file" accept="image/*" capture="environment" data-food="photo" hidden></label><label class="btn quiet">${L('Из галереи', 'From gallery')}<input type="file" accept="image/*" data-food="photo" hidden></label></div>
       <form id="foodText" class="food-text"><input id="foodTextIn" placeholder="${L('или опиши: творог 200 г', 'or describe: 200 g cottage cheese')}" maxlength="300"><button class="btn quiet" type="submit">OK</button></form></div>
-      <button class="food-fab-btn" data-a="food-fab" aria-label="${L('Закрыть', 'Close')}">✕</button>`
+      <button class="food-fab-btn close" data-a="food-fab" aria-label="${L('Закрыть', 'Close')}">✕</button>`
       : `<button class="food-fab-btn" data-a="food-fab">${busy.on ? L('Считаю…', 'Estimating…') : L('+ Еда', '+ Meal')}</button>`;
   }
   // The account (and with it membership) arrives after the first paint: redraw once it does, so the tabs show at launch.

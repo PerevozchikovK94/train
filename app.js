@@ -3070,6 +3070,23 @@ function analyse(d, base, sid) {
   return {verdicts, best, cmp};
 }
 
+// Strength: the sets from Garmin's FIT file. Runs of the same exercise are grouped; without names (the watch didn't
+// recognise them and none were picked) the sets are numbered, with a hint how to get names next time.
+const EX = {bench_press: ['Жим лёжа', 'Bench press'], calf_raise: ['Подъёмы на носки', 'Calf raise'], carry: ['Переноска', 'Carry'], core: ['Кор', 'Core'], crunch: ['Скручивания', 'Crunch'],
+  curl: ['Сгибания на бицепс', 'Curl'], deadlift: ['Становая тяга', 'Deadlift'], flye: ['Разводки', 'Flye'], hip_raise: ['Ягодичный мост', 'Hip raise'], hyperextension: ['Гиперэкстензия', 'Hyperextension'],
+  lateral_raise: ['Махи в стороны', 'Lateral raise'], leg_curl: ['Сгибания ног', 'Leg curl'], leg_raise: ['Подъёмы ног', 'Leg raise'], lunge: ['Выпады', 'Lunge'], olympic_lift: ['Олимпийское движение', 'Olympic lift'],
+  plank: ['Планка', 'Plank'], plyo: ['Плиометрика', 'Plyo'], pull_up: ['Подтягивания', 'Pull-up'], push_up: ['Отжимания', 'Push-up'], row: ['Тяга', 'Row'], shoulder_press: ['Жим над головой', 'Shoulder press'],
+  shrug: ['Шраги', 'Shrug'], sit_up: ['Пресс', 'Sit-up'], squat: ['Присед', 'Squat'], total_body: ['Всё тело', 'Total body'], triceps_extension: ['Трицепс', 'Triceps extension'], warm_up: ['Разминка', 'Warm-up']};
+function setsHTML(sets) {
+  const work = sets.filter(x => x.reps), reps = work.reduce((t, x) => t + x.reps, 0), vol = Math.round(work.reduce((t, x) => t + x.reps * (x.kg || 0), 0)), top = Math.max(0, ...work.map(x => x.kg || 0));
+  const name = x => x.cat ? (EX[x.cat] ? L(EX[x.cat][0], EX[x.cat][1]) : x.cat.replace(/_/g, ' ')) : null;
+  const groups = []; for (const x of sets) { const n = name(x), g = groups[groups.length - 1]; if (g && g.n === n) g.s.push(x); else groups.push({n, s: [x]}); }
+  const kg = v => v ? `${fNum(v, v % 1 ? 1 : 0)} ${L('кг', 'kg')}` : L('свой вес', 'bodyweight');
+  let i = 0;
+  return `<div class="section-title">${L('Подходы', 'Sets')}</div><p class="hint" style="margin:-4px 0 8px">${work.length} ${L('подх.', 'sets')} · ${reps} ${L('повт.', 'reps')}${vol ? ` · ${L('объём', 'volume')} ${fNum(vol)} ${L('кг', 'kg')}` : ''}${top ? ` · ${L('макс.', 'top')} ${kg(top)}` : ''}</p>
+    <div class="list sets">${groups.map(g => `${g.n ? `<div class="row sets-h"><b>${esc(g.n)}</b></div>` : ''}${g.s.map(x => `<div class="row"><span class="t"><b class="num">${++i}. ${x.reps ? `${x.reps} × ${kg(x.kg)}` : L('подход', 'set')}</b></span><span class="v num muted">${x.sec ? hms(x.sec) : ''}</span></div>`).join('')}`).join('')}</div>
+    ${sets.every(x => !x.cat) ? `<p class="hint">${L('Часы не определили упражнения. Выбери упражнение на часах во время подхода (или запусти тренировку из Garmin Connect) — и здесь будут названия.', 'The watch didn’t recognise the exercises. Pick the exercise on the watch during a set (or start a workout from Garmin Connect) to get names here.')}</p>` : ''}`;
+}
 async function openActivity(id, plan, sid) {
   if (String(id).startsWith('hk:')) {
     const b = (state.local.acts?.list || []).find(a => a.id === id); if (!b) return;
@@ -3162,6 +3179,7 @@ function activityHTML(base, d, plan, sid, loading, error) {
   h += contributionHTML(base, d, sid, an);
   h += window.TrainFood?.workoutFuel(d?.summary, base) || '';
   if (st.length) h += `<dl class="act-stats">${st.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd class="num">${esc(v)}</dd></div>`).join('')}</dl>`;
+  if (d?.sets?.length) h += setsHTML(d.sets);
   if (an?.best.length) h += `<div class="section-title">${L('Лучшие отрезки', 'Best efforts')}</div>${an.best.some(b => b[0].endsWith('≈')) ? `<p class="hint" style="margin:-4px 0 8px">${L('≈ — оценка по точкам графика', '≈ — estimated from chart samples')}</p>` : ''}<dl class="act-stats best">${an.best.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd class="num">${esc(v)}</dd></div>`).join('')}</dl>`;
   if (an?.cmp) h += an.cmp;
   // heart-rate zones: one hue, light to dark
@@ -3776,7 +3794,7 @@ document.addEventListener('pointerdown', ev => { if (ev.target.closest('.chip'))
 // Debug hook for local testing (busy/acts injection); harmless in production.
 // What add-ons (food.js) may use; nothing else in the app depends on them.
 window.TrainApp = {hrText, loadWellness, get wellness() { return state.local.wellness; }, L, esc, kName, KINDS, fDur, fHours, effective, todayStr, DAYS, render, $, cloud, toast, icon, view, ymd, parseYmd, mondayOf, addDays, SPORTS, trainingSport, actSport, lang: () => lang, get state() { return state; }};
-window.trainDebug = {get state() { return state; }, acceptPlan, pausePlan, resumePlan, tlSave, tlClamp, adoptLang, get lang() { return lang; }, varySessions, ensureWeek, place, guard, balanceLines, tripKind, run, get cloud() { return cloud; }, push, briefs, contribution, hrAuto, thrAuto, ftpAuto, effThr, effFtp, hrWords, trainStatus, breakOf, synced, openChat, chatContext, openWizard, openOnboarding, onb, onbGo, hrTargets, hrText, wiz, rulesPlan, projectOutlook, outlookWeek, buildPlan, applyWeekPlan, makeWeekly, maybeWeekly, weeklyDue, planContext, proposalSheet, view, run, parse, onBusy, matchActs, render, persist, place, setBusy(wk, events) { state.local.busy[wk] = {at: Date.now(), events}; saveLocal(); onBusy(wk); }, setActs(list) { state.local.acts = {at: Date.now(), list, linked: true}; saveLocal(); for (const wk of Object.keys(state.weeks)) { const week = state.weeks[wk], before = snapshot(week), lines = matchActs(wk, week); if (lines.length) commit(wk, week, before, 'Garmin', lines); } render(); }};
+window.trainDebug = {get state() { return state; }, setsHTML, acceptPlan, pausePlan, resumePlan, tlSave, tlClamp, adoptLang, get lang() { return lang; }, varySessions, ensureWeek, place, guard, balanceLines, tripKind, run, get cloud() { return cloud; }, push, briefs, contribution, hrAuto, thrAuto, ftpAuto, effThr, effFtp, hrWords, trainStatus, breakOf, synced, openChat, chatContext, openWizard, openOnboarding, onb, onbGo, hrTargets, hrText, wiz, rulesPlan, projectOutlook, outlookWeek, buildPlan, applyWeekPlan, makeWeekly, maybeWeekly, weeklyDue, planContext, proposalSheet, view, run, parse, onBusy, matchActs, render, persist, place, setBusy(wk, events) { state.local.busy[wk] = {at: Date.now(), events}; saveLocal(); onBusy(wk); }, setActs(list) { state.local.acts = {at: Date.now(), list, linked: true}; saveLocal(); for (const wk of Object.keys(state.weeks)) { const week = state.weeks[wk], before = snapshot(week), lines = matchActs(wk, week); if (lines.length) commit(wk, week, before, 'Garmin', lines); } render(); }};
 
 // Back from Oura's consent screen: #oura=ok or #oura=<reason>.
 const ouraBack = (location.hash.match(/oura=([\w-]+)/) || [])[1];

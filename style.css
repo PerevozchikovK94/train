@@ -557,3 +557,4 @@ button.pg-week{width:100%;text-align:left;background:none;padding:2px 0;cursor:p
 .tl-hit .knob{box-shadow:0 0 0 2px color-mix(in srgb,var(--ink) 25%,transparent);transition:left .08s}
 .tl-hit.dragging .knob{transition:none;box-shadow:0 0 0 3px var(--c,var(--accent))}
 .tl-hint{margin:2px 0 0;font-size:12px;color:var(--muted)}
+.sets .sets-h{min-height:0;padding-top:10px;color:var(--muted);font-size:14px}
