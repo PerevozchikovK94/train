@@ -1276,12 +1276,16 @@ function chatSheetHTML() {
 }
 const chatLogEl = () => document.getElementById('chatLog');
 function chatScroll(force) { const el = chatLogEl(); if (el && (force || el.scrollHeight - el.scrollTop - el.clientHeight < 120)) el.scrollTop = el.scrollHeight; }
+// A re-render replaces the log element, which starts at the top: keep the reader where they were, or at the bottom if
+// they were following along (or a new answer has arrived).
 function chatRender(forceScroll) {
   if (!sheetCtx?.chat) return;
   const inp = $('#chatInput'), v = inp?.value || '', had = document.activeElement === inp;
+  const old = chatLogEl(), top = old?.scrollTop || 0, atEnd = !old || old.scrollHeight - old.scrollTop - old.clientHeight < 120;
   $('#sheetPanel').innerHTML = chatSheetHTML();
   const n = $('#chatInput'); n.value = v; growInput(n); if (had) n.focus();
-  chatScroll(forceScroll);
+  const el = chatLogEl(); if (!el) return;
+  if (forceScroll || atEnd) el.scrollTop = el.scrollHeight; else el.scrollTop = top;
 }
 function growInput(el) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 140) + 'px'; }
 function openChat(text, focus) {
@@ -1360,7 +1364,7 @@ async function sendChat(text, focus) {
   } finally {
     msg.pending = false; chat.busy = false; chat.ctrl = null;
     if (!state.chat.includes(msg)) state.chat.push(msg); // a sync replaced the state mid-answer
-    persist(); chatRender();
+    persist(); chatRender(true); // the answer is in: to the bottom, where it ends
   }
 }
 function chatRetry() {
@@ -3794,7 +3798,7 @@ document.addEventListener('pointerdown', ev => { if (ev.target.closest('.chip'))
 // Debug hook for local testing (busy/acts injection); harmless in production.
 // What add-ons (food.js) may use; nothing else in the app depends on them.
 window.TrainApp = {hrText, loadWellness, get wellness() { return state.local.wellness; }, L, esc, kName, KINDS, fDur, fHours, effective, todayStr, DAYS, render, $, cloud, toast, icon, view, ymd, parseYmd, mondayOf, addDays, SPORTS, trainingSport, actSport, lang: () => lang, get state() { return state; }};
-window.trainDebug = {get state() { return state; }, setsHTML, acceptPlan, pausePlan, resumePlan, tlSave, tlClamp, adoptLang, get lang() { return lang; }, varySessions, ensureWeek, place, guard, balanceLines, tripKind, run, get cloud() { return cloud; }, push, briefs, contribution, hrAuto, thrAuto, ftpAuto, effThr, effFtp, hrWords, trainStatus, breakOf, synced, openChat, chatContext, openWizard, openOnboarding, onb, onbGo, hrTargets, hrText, wiz, rulesPlan, projectOutlook, outlookWeek, buildPlan, applyWeekPlan, makeWeekly, maybeWeekly, weeklyDue, planContext, proposalSheet, view, run, parse, onBusy, matchActs, render, persist, place, setBusy(wk, events) { state.local.busy[wk] = {at: Date.now(), events}; saveLocal(); onBusy(wk); }, setActs(list) { state.local.acts = {at: Date.now(), list, linked: true}; saveLocal(); for (const wk of Object.keys(state.weeks)) { const week = state.weeks[wk], before = snapshot(week), lines = matchActs(wk, week); if (lines.length) commit(wk, week, before, 'Garmin', lines); } render(); }};
+window.trainDebug = {get state() { return state; }, setsHTML, chatRender, acceptPlan, pausePlan, resumePlan, tlSave, tlClamp, adoptLang, get lang() { return lang; }, varySessions, ensureWeek, place, guard, balanceLines, tripKind, run, get cloud() { return cloud; }, push, briefs, contribution, hrAuto, thrAuto, ftpAuto, effThr, effFtp, hrWords, trainStatus, breakOf, synced, openChat, chatContext, openWizard, openOnboarding, onb, onbGo, hrTargets, hrText, wiz, rulesPlan, projectOutlook, outlookWeek, buildPlan, applyWeekPlan, makeWeekly, maybeWeekly, weeklyDue, planContext, proposalSheet, view, run, parse, onBusy, matchActs, render, persist, place, setBusy(wk, events) { state.local.busy[wk] = {at: Date.now(), events}; saveLocal(); onBusy(wk); }, setActs(list) { state.local.acts = {at: Date.now(), list, linked: true}; saveLocal(); for (const wk of Object.keys(state.weeks)) { const week = state.weeks[wk], before = snapshot(week), lines = matchActs(wk, week); if (lines.length) commit(wk, week, before, 'Garmin', lines); } render(); }};
 
 // Back from Oura's consent screen: #oura=ok or #oura=<reason>.
 const ouraBack = (location.hash.match(/oura=([\w-]+)/) || [])[1];
