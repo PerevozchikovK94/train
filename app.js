@@ -3081,15 +3081,22 @@ const EX = {bench_press: ['Жим лёжа', 'Bench press'], calf_raise: ['По�
   lateral_raise: ['Махи в стороны', 'Lateral raise'], leg_curl: ['Сгибания ног', 'Leg curl'], leg_raise: ['Подъёмы ног', 'Leg raise'], lunge: ['Выпады', 'Lunge'], olympic_lift: ['Олимпийское движение', 'Olympic lift'],
   plank: ['Планка', 'Plank'], plyo: ['Плиометрика', 'Plyo'], pull_up: ['Подтягивания', 'Pull-up'], push_up: ['Отжимания', 'Push-up'], row: ['Тяга', 'Row'], shoulder_press: ['Жим над головой', 'Shoulder press'],
   shrug: ['Шраги', 'Shrug'], sit_up: ['Пресс', 'Sit-up'], squat: ['Присед', 'Squat'], total_body: ['Всё тело', 'Total body'], triceps_extension: ['Трицепс', 'Triceps extension'], warm_up: ['Разминка', 'Warm-up']};
-function setsHTML(sets) {
+function setsHTML(sets, exSum = []) {
   const work = sets.filter(x => x.reps), reps = work.reduce((t, x) => t + x.reps, 0), vol = Math.round(work.reduce((t, x) => t + x.reps * (x.kg || 0), 0)), top = Math.max(0, ...work.map(x => x.kg || 0));
   const name = x => x.cat ? (EX[x.cat] ? L(EX[x.cat][0], EX[x.cat][1]) : x.cat.replace(/_/g, ' ')) : null;
   const groups = []; for (const x of sets) { const n = name(x), g = groups[groups.length - 1]; if (g && g.n === n) g.s.push(x); else groups.push({n, s: [x]}); }
   const kg = v => v ? `${fNum(v, v % 1 ? 1 : 0)} ${L('кг', 'kg')}` : L('свой вес', 'bodyweight');
+  // Names edited in Garmin Connect after the workout reach us only through Garmin's per-exercise summary, not the file:
+  // when the summary names exercises the file doesn't, show them on top (totals per exercise) and say where they came from.
+  const fitCats = new Set(sets.map(x => x.cat).filter(Boolean));
+  const edited = exSum.some(x => x.cat && !fitCats.has(x.cat));
+  const exBlock = edited ? `<div class="section-title">${L('Упражнения', 'Exercises')}</div><div class="list sets">${exSum.map(x => `<div class="row"><span class="t"><b>${esc(x.cat ? name(x) : L('Без названия', 'Unnamed'))}</b><span>${x.sets} ${L('подх.', 'sets')} · ${x.reps} ${L('повт.', 'reps')}${x.maxKg ? ` · ${L('макс.', 'top')} ${kg(x.maxKg)}` : ''}</span></span>${x.kg ? `<span class="v num muted">${fNum(x.kg)} ${L('кг', 'kg')}</span>` : ''}</div>`).join('')}</div>
+    <p class="hint">${L('Названия — из Garmin Connect (поправлены после тренировки). Подходы ниже — из файла часов, в нём названий нет.', 'Names from Garmin Connect (edited after the workout). The sets below come from the watch file, which has no names.')}</p>` : '';
+  if (!sets.length) return exBlock;
   let i = 0;
-  return `<div class="section-title">${L('Подходы', 'Sets')}</div><p class="hint" style="margin:-4px 0 8px">${work.length} ${L('подх.', 'sets')} · ${reps} ${L('повт.', 'reps')}${vol ? ` · ${L('объём', 'volume')} ${fNum(vol)} ${L('кг', 'kg')}` : ''}${top ? ` · ${L('макс.', 'top')} ${kg(top)}` : ''}</p>
+  return exBlock + `<div class="section-title">${L('Подходы', 'Sets')}</div><p class="hint" style="margin:-4px 0 8px">${work.length} ${L('подх.', 'sets')} · ${reps} ${L('повт.', 'reps')}${vol ? ` · ${L('объём', 'volume')} ${fNum(vol)} ${L('кг', 'kg')}` : ''}${top ? ` · ${L('макс.', 'top')} ${kg(top)}` : ''}</p>
     <div class="list sets">${groups.map(g => `${g.n ? `<div class="row sets-h"><b>${esc(g.n)}</b></div>` : ''}${g.s.map(x => `<div class="row"><span class="t"><b class="num">${++i}. ${x.reps ? `${x.reps} × ${kg(x.kg)}` : L('подход', 'set')}</b></span><span class="v num muted">${x.sec ? hms(x.sec) : ''}</span></div>`).join('')}`).join('')}</div>
-    ${sets.every(x => !x.cat) ? `<p class="hint">${L('Часы не определили упражнения. Выбери упражнение на часах во время подхода (или запусти тренировку из Garmin Connect) — и здесь будут названия.', 'The watch didn’t recognise the exercises. Pick the exercise on the watch during a set (or start a workout from Garmin Connect) to get names here.')}</p>` : ''}`;
+    ${sets.every(x => !x.cat) && !edited ? `<p class="hint">${L('Часы не определили упражнения. Выбери упражнение на часах во время подхода (или запусти тренировку из Garmin Connect) — и здесь будут названия.', 'The watch didn’t recognise the exercises. Pick the exercise on the watch during a set (or start a workout from Garmin Connect) to get names here.')}</p>` : ''}`;
 }
 async function openActivity(id, plan, sid) {
   if (String(id).startsWith('hk:')) {
@@ -3183,7 +3190,7 @@ function activityHTML(base, d, plan, sid, loading, error) {
   h += contributionHTML(base, d, sid, an);
   h += window.TrainFood?.workoutFuel(d?.summary, base) || '';
   if (st.length) h += `<dl class="act-stats">${st.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd class="num">${esc(v)}</dd></div>`).join('')}</dl>`;
-  if (d?.sets?.length) h += setsHTML(d.sets);
+  if (d?.sets?.length || d?.exSummary?.length) h += setsHTML(d.sets || [], d.exSummary || []);
   if (an?.best.length) h += `<div class="section-title">${L('Лучшие отрезки', 'Best efforts')}</div>${an.best.some(b => b[0].endsWith('≈')) ? `<p class="hint" style="margin:-4px 0 8px">${L('≈ — оценка по точкам графика', '≈ — estimated from chart samples')}</p>` : ''}<dl class="act-stats best">${an.best.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd class="num">${esc(v)}</dd></div>`).join('')}</dl>`;
   if (an?.cmp) h += an.cmp;
   // heart-rate zones: one hue, light to dark
