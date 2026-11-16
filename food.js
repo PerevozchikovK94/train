@@ -16,15 +16,21 @@
   const on = () => !!cloud.me?.member;
   const day = d => { F.log[d] = F.log[d] || {s: {}, p: [], m: []}; F.log[d].m = F.log[d].m || []; return F.log[d]; };
   const busy = {on: false};
-  // The day's plan: protein 1.8 g/kg and fat 1 g/kg every day; carbs follow the training load —
-  // ~3.5 g/kg on rest days, 4.5 under an hour, 6 for 1–2.5 h, 7.5 for longer (ACSM/Thomas 2016: 3–5 light, 5–7 moderate, 6–10 high; B).
+  // The day's plan, from what the day's training needs rather than minutes alone (evidence base §12, rules 106–107):
+  // protein 1.6 g/kg (Morton 2018: the gain levels off at ~1.6), fat 0.9 g/kg, carbs from the light band (Thomas, Erdman,
+  // Burke 2016: 3–5 g/kg light, 5–7 ~1 h a day moderate-hard, 6–10 for 1–3 h) — 3 g/kg on a rest day, endurance time
+  // adds ~1 g/kg an hour easy and ~1.5 hard, strength and climbing ~0.5 an hour; capped at 8. The step by minutes it
+  // replaces put a 60-min gym day at 6 g/kg and overstated most days by 500–800 kcal.
   const KCAL_MIN = {run: 11, bike: 9, swim: 9, gym: 6, climb: 7, hike: 6, walk: 4};
+  const CARB_H = {run: 1, bike: 1, swim: 1, hike: 0.7, gym: 0.5, climb: 0.5};
   function targets(sessions) {
     if (!F.weight) return null;
     const w = F.weight, ss = sessions.filter(x => x.status === 'planned' || x.status === 'done');
     const min = ss.reduce((t, x) => t + (x.act?.min ?? x.min), 0);
-    const ck = min === 0 ? 3.5 : min < 60 ? 4.5 : min <= 150 ? 6 : 7.5;
-    const p = Math.round(w * 1.8), f = Math.round(w * 1), c = Math.round(w * ck), kcal = Math.round((4 * (p + c) + 9 * f) / 10) * 10;
+    let ck = 3;
+    for (const x of ss) { const K = KINDS[x.kind] || {}, k = CARB_H[K.sport] || 0; ck += (x.act?.min ?? x.min) / 60 * k * (/_q$/.test(x.kind) ? 1.5 : 1); } // intervals and tempo burn more carbs an hour
+    ck = Math.min(8, Math.round(ck * 2) / 2);
+    const p = Math.round(w * 1.6), f = Math.round(w * 0.9), c = Math.round(w * ck), kcal = Math.round((4 * (p + c) + 9 * f) / 10) * 10;
     const burn = ss.reduce((t, x) => t + (x.act?.min ?? x.min) * (KCAL_MIN[KINDS[x.kind]?.sport] || 6), 0);
     return {kcal, p, f, c, min, ck, burn};
   }
@@ -171,7 +177,7 @@
           <div class="fh-num"><b>${fmt(E.kcal)}</b><span class="muted">${L('из', 'of')} ${fmt(T.kcal)} ${L('ккал', 'kcal')}</span></div></div>
         <p class="fh-left${left < 0 ? ' over' : ''}">${left >= 0 ? L(`Осталось ${fmt(left)} ккал`, `${fmt(left)} kcal left`) : L(`На ${fmt(-left)} ккал больше нормы`, `${fmt(-left)} kcal over`)}</p>
         <div class="mlist">${MAC().map(([k, n, hue]) => meter(n, E[k], T[k], hue, L(' г', ' g'))).join('')}</div>
-        <p class="hint fh-why">${T.min ? L(`День с тренировкой ${fDur(T.min)}: углеводы ${String(T.ck).replace('.', ',')} г/кг, белок 1,8, жиры 1 — на поддержание веса.`, `A ${fDur(T.min)} training day: carbs ${T.ck} g/kg, protein 1.8, fat 1 — for maintenance.`) : L('День отдыха: углеводы 3,5 г/кг, белок 1,8, жиры 1 — на поддержание веса.', 'Rest day: carbs 3.5 g/kg, protein 1.8, fat 1 — for maintenance.')}</p></section>`;
+        <p class="hint fh-why">${T.min ? L(`День с тренировкой ${fDur(T.min)}: углеводы ${String(T.ck).replace('.', ',')} г/кг (по длительности и интенсивности), белок 1,6, жиры 0,9.`, `A ${fDur(T.min)} training day: carbs ${T.ck} g/kg (by duration and intensity), protein 1.6, fat 0.9.`) : L('День отдыха: углеводы 3 г/кг, белок 1,6, жиры 0,9.', 'Rest day: carbs 3 g/kg, protein 1.6, fat 0.9.')}</p></section>`;
     } else h += `<section class="card fh"><label class="field">${L('Вес, кг — и покажу норму калорий и БЖУ на день', 'Weight, kg — for the day’s calorie and macro targets')}<input data-food="weight" type="number" inputmode="decimal" min="35" max="200" step="0.5" placeholder="75"></label><p class="hint" style="margin:8px 0 0">${L('Еду по фото или описанию оценивает ИИ (Claude): фото уходит на оценку и не хранится, остаётся только результат.', 'Meals by photo or text are estimated by AI (Claude): the photo is sent for the estimate and not kept, only the result is.')}</p></section>`;
     // fuel around the day's session
     const fuel = fuelFor(ss);
