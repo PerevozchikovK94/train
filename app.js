@@ -812,6 +812,12 @@ function run(text) {
       const s = findTarget(wk, week, q, 'skip');
       if (!s) return reply(text, [L('Не нашёл тренировку. Пример: «пропустил бег»', 'No session found. Try “skipped run”')]);
       const day = s.day;
+      if (replanning) {
+        week.sessions = week.sessions.filter(x => x !== s);
+        (replanning.gone ||= []).push({kind: s.kind, day});
+        lines.push(L(`${kName(s.kind)} в ${D[day]} — убрал из плана`, `${kName(s.kind)} on ${D[day]} — taken out of the plan`));
+        return commit(wk, week, before, text, lines);
+      }
       s.status = 'skipped'; s.locked = true;
       lines.push(L(`${kName(s.kind)} в ${D[day]} — пропуск отмечен`, `${kName(s.kind)} on ${D[day]} — marked skipped`));
       const key = s.key || s.kind === 'bike_long' || s.kind === 'bike_q' || s.kind === 'run_long' || s.kind === 'run_q';
@@ -1148,6 +1154,9 @@ function acctStatus() {
 // they run through the same planner as the command bar, and only when the person taps «Применить».
 const chat = {busy: false, ctrl: null};
 let capture = null; // while applying a proposal, commit() and reply() collect lines here instead of rendering
+// While the assistant's changes run: its «пропустил» is a plan change (swap or drop), not a miss — the session is dropped,
+// not skipped, and doesn't count against the week; the assistant places any move itself.
+let replanning = null; // {gone: [{kind, day}]} while the assistant's changes run
 async function aiStatus() {
   try { const {data, error} = await cloud.client.functions.invoke('train-chat', {body: {action: 'status'}}); cloud.ai = !error && !!data?.ai; }
   catch { cloud.ai = false; }
@@ -1278,6 +1287,7 @@ const chatLogEl = () => document.getElementById('chatLog');
 function chatScroll(force) { const el = chatLogEl(); if (el && (force || el.scrollHeight - el.scrollTop - el.clientHeight < 120)) el.scrollTop = el.scrollHeight; }
 // A re-render replaces the log element, which starts at the top: keep the reader where they were, or at the bottom if
 // they were following along (or a new answer has arrived).
+// forceScroll: true → the bottom; {to: id} → the start of that message (a new answer opens where it begins).
 function chatRender(forceScroll) {
   if (!sheetCtx?.chat) return;
   const inp = $('#chatInput'), v = inp?.value || '', had = document.activeElement === inp;
@@ -1285,12 +1295,18 @@ function chatRender(forceScroll) {
   $('#sheetPanel').innerHTML = chatSheetHTML();
   const n = $('#chatInput'); n.value = v; growInput(n); if (had) n.focus();
   const el = chatLogEl(); if (!el) return;
-  if (forceScroll || atEnd) el.scrollTop = el.scrollHeight; else el.scrollTop = top;
+  if (forceScroll?.to) chatScrollTo(forceScroll.to);
+  else if (forceScroll || atEnd) el.scrollTop = el.scrollHeight; else el.scrollTop = top;
+}
+function chatScrollTo(id) {
+  const el = chatLogEl(), m = el?.querySelector(`[data-mid="${id}"]`); if (!m) return;
+  el.scrollTop += m.getBoundingClientRect().top - el.getBoundingClientRect().top - 12;
 }
 function growInput(el) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 140) + 'px'; }
 function openChat(text, focus) {
   openSheet(chatSheetHTML(), {chat: true});
-  chatScroll(true);
+  const last = state.chat[state.chat.length - 1];
+  if (last?.role === 'assistant' && !text) chatScrollTo(last.id); else chatScroll(true); // open at the start of the last answer
   if (text) sendChat(text, focus);
 }
 // The conversation as the API wants it: text only, alternating, a proposal summarised into its message.
@@ -1343,13 +1359,14 @@ async function sendChat(text, focus) {
   text = String(text || '').trim();
   if (!text || chat.busy) return;
   if (!cloud.user) { toast(L('Войди в настройках — ассистент работает с аккаунтом', 'Sign in under Settings to use the assistant')); return; }
-  state.chat.push({id: rid(), role: 'user', text, at: isoNow(), ...(focus ? {focus} : {})});
+  const uid = rid();
+  state.chat.push({id: uid, role: 'user', text, at: isoNow(), ...(focus ? {focus} : {})});
   const msg = {id: rid(), role: 'assistant', text: '', at: isoNow(), pending: true};
   state.chat.push(msg);
   state.chat = state.chat.slice(-40);
   chat.busy = true; chat.ctrl = new AbortController();
-  chatRender(true);
-  const paint = () => { const el = document.querySelector(`[data-mid="${msg.id}"] .md`); if (el) { el.innerHTML = md(msg.text); el.parentElement.querySelector('.typing')?.remove(); chatScroll(); } };
+  chatRender({to: uid}); // the question on top, the answer types out under it
+  const paint = () => { const el = document.querySelector(`[data-mid="${msg.id}"] .md`); if (el) { el.innerHTML = md(msg.text); el.parentElement.querySelector('.typing')?.remove(); } };
   try {
     await aiStream({messages: chatHistory(), context: chatContext(focus ? actFocus(focus.act) : null)}, chat.ctrl.signal, ev => {
       if (ev.t === 'text') { msg.text += ev.d; paint(); }
@@ -1364,7 +1381,7 @@ async function sendChat(text, focus) {
   } finally {
     msg.pending = false; chat.busy = false; chat.ctrl = null;
     if (!state.chat.includes(msg)) state.chat.push(msg); // a sync replaced the state mid-answer
-    persist(); chatRender(true); // the answer is in: to the bottom, where it ends
+    persist(); chatRender({to: msg.id}); // the answer is in: open it at its start
   }
 }
 function chatRetry() {
@@ -1384,9 +1401,12 @@ function applyProposal(id) {
   view.v = 'week'; view.wk = wk;
   const week = ensureWeek(wk);
   if (!week) { toast(L('Эта неделя уже прошла', 'This week is over')); return; }
-  const top = week.log[0], out = [];
-  capture = out;
-  try { for (const c of p.commands) run(c); } finally { capture = null; }
+  const top = week.log[0], out = [], had = new Set(week.sessions.map(x => x.id));
+  capture = out; const rp = replanning = {gone: []};
+  try { for (const c of p.commands) run(c); } finally { capture = null; replanning = null; }
+  // A session taken out and another put on the same day is a swap: the new one says what it replaces.
+  const fresh = week.sessions.filter(x => !had.has(x.id) && x.status === 'planned');
+  for (const x of rp.gone) { const n = fresh.find(f => f.day === x.day && !f.was); if (n) n.was = x.kind; }
   const n = top ? week.log.indexOf(top) : week.log.length;
   if (n > 1) {
     const es = week.log.splice(0, n);
@@ -2625,10 +2645,19 @@ function toast(msg) { const el = $('#toast'); el.textContent = msg; el.hidden = 
 function render() {
   const app = $('#app');
   app.innerHTML = ['today', 'food', 'stats'].includes(view.v) && window.TrainFood ? window.TrainFood.screen(view.v) : view.v === 'settings' ? settingsHTML() : view.v === 'program' ? programHTML() : weekHTML();
-  $('#cmd').hidden = view.v !== 'week';
+  // With the assistant the command bar goes: the chat button (bottom left) takes requests and plan changes alike.
+  $('#cmd').hidden = view.v !== 'week' || !!cloud.ai;
+  chatFabRender();
   $('#cmdInput').placeholder = cloud.ai ? L('Что поменялось — или спроси', 'What changed — or ask') : L('Что поменялось? «перенеси бег на чт»', 'What changed? “move run to Thu”');
   renderChips();
   document.documentElement.lang = lang;
+}
+function chatFabRender() {
+  let b = document.getElementById('chatFab');
+  if (!b) { b = document.createElement('button'); b.id = 'chatFab'; b.className = 'chat-fab'; b.dataset.a = 'chat'; document.body.appendChild(b); }
+  b.hidden = !cloud.ai || view.v === 'settings';
+  b.setAttribute?.('aria-label', L('Ассистент', 'Assistant'));
+  b.innerHTML = icon('chat', 24);
 }
 function renderChips() {
   const chips = lang === 'ru' ? ['пропустил', 'сегодня 30 минут', 'перенеси на завтра', 'болею', 'уезжаю пт–вс', 'отмени'] : ['skipped', '30 minutes today', 'move to tomorrow', 'sick', 'away Fri–Sun', 'undo'];
@@ -2640,7 +2669,7 @@ function weekHTML() {
   const sub = weekTitle(wk) + (ti >= 0 && ti <= 6 ? L(' · эта неделя', ' · this week') : ti < 0 ? (ti >= -7 ? L(' · следующая', ' · next week') : '') : '');
   let h = `<main class="screen"><header class="nav"><div class="nav-row">
     <span class="weeknav"><button class="nav-btn icon-btn" data-a="wk" data-d="-7" aria-label="${L('Прошлая неделя', 'Previous week')}">${icon('left')}</button><button class="nav-btn icon-btn" data-a="wk" data-d="7" ${wk >= ymd(addDays(mondayOf(new Date()), 21)) ? 'disabled ' : ''}aria-label="${L('Следующая неделя', 'Next week')}">${icon('right')}</button>${ti < 0 || ti > 6 ? `<button class="nav-btn link" data-a="wk-today">${L('Сегодня', 'Today')}</button>` : ''}</span>
-    <span class="nav-right">${cloud.ai ? `<button class="nav-btn icon-btn" data-a="chat" aria-label="${L('Ассистент', 'Assistant')}">${icon('chat', 22)}</button>` : ''}<button class="nav-btn" data-a="program">${L('Программа', 'Program')}</button><button class="nav-btn icon-btn" data-a="settings" aria-label="${L('Настройки', 'Settings')}">${icon('gear', 22)}</button></span></div>
+    <span class="nav-right"><button class="nav-btn" data-a="program">${L('Программа', 'Program')}</button><button class="nav-btn icon-btn" data-a="settings" aria-label="${L('Настройки', 'Settings')}">${icon('gear', 22)}</button></span></div>
     ${window.TrainFood?.tabs('week') || ''}<h1>${L('Неделя', 'Week')}<span class="sub">${esc(sub)}</span></h1></header>`;
   if (lastChange && lastChange.wk === wk) {
     h += `<section class="card change"><div class="card-head"><h3>${lastChange.info ? L('Ответ', 'Reply') : L('Что поменялось', 'What changed')}</h3>${!lastChange.info ? `<button class="nav-btn link" data-a="undo">${L('Отменить', 'Undo')}</button>` : `<button class="nav-btn link" data-a="dismiss">${L('Ок', 'OK')}</button>`}</div>
@@ -2748,7 +2777,7 @@ function weekListHTML(wk, week, effs, ti) {
   };
   for (let i = 0; i < 7; i++) {
     const date = addDays(parseYmd(wk), i);
-    const sess = effs.filter(s => s.day === i).sort((a, b) => (a.start ?? 0) - (b.start ?? 0));
+    const sess = effs.filter(s => s.day === i && s.status !== 'dropped').sort((a, b) => (a.start ?? 0) - (b.start ?? 0)); // removed = gone, no «убрано» row
     const ex = extras(wk, week).filter(a => a.start.slice(0, 10) === ymd(date));
     if (week.history && !ex.length) continue;
     const away = (week.away || []).includes(i), sick = (week.sick || []).includes(i);
@@ -3805,7 +3834,7 @@ document.addEventListener('pointerdown', ev => { if (ev.target.closest('.chip'))
 // Debug hook for local testing (busy/acts injection); harmless in production.
 // What add-ons (food.js) may use; nothing else in the app depends on them.
 window.TrainApp = {hrText, loadWellness, get wellness() { return state.local.wellness; }, L, esc, kName, KINDS, fDur, fHours, effective, todayStr, DAYS, render, $, cloud, toast, icon, view, ymd, parseYmd, mondayOf, addDays, SPORTS, trainingSport, actSport, lang: () => lang, get state() { return state; }};
-window.trainDebug = {get state() { return state; }, setsHTML, chatRender, acceptPlan, pausePlan, resumePlan, tlSave, tlClamp, adoptLang, get lang() { return lang; }, varySessions, ensureWeek, place, guard, balanceLines, tripKind, run, get cloud() { return cloud; }, push, briefs, contribution, hrAuto, thrAuto, ftpAuto, effThr, effFtp, hrWords, trainStatus, breakOf, synced, openChat, chatContext, openWizard, openOnboarding, onb, onbGo, hrTargets, hrText, wiz, rulesPlan, projectOutlook, outlookWeek, buildPlan, applyWeekPlan, makeWeekly, maybeWeekly, weeklyDue, planContext, proposalSheet, view, run, parse, onBusy, matchActs, render, persist, place, setBusy(wk, events) { state.local.busy[wk] = {at: Date.now(), events}; saveLocal(); onBusy(wk); }, setActs(list) { state.local.acts = {at: Date.now(), list, linked: true}; saveLocal(); for (const wk of Object.keys(state.weeks)) { const week = state.weeks[wk], before = snapshot(week), lines = matchActs(wk, week); if (lines.length) commit(wk, week, before, 'Garmin', lines); } render(); }};
+window.trainDebug = {get state() { return state; }, applyProposal, setsHTML, chatRender, acceptPlan, pausePlan, resumePlan, tlSave, tlClamp, adoptLang, get lang() { return lang; }, varySessions, ensureWeek, place, guard, balanceLines, tripKind, run, get cloud() { return cloud; }, push, briefs, contribution, hrAuto, thrAuto, ftpAuto, effThr, effFtp, hrWords, trainStatus, breakOf, synced, openChat, chatContext, openWizard, openOnboarding, onb, onbGo, hrTargets, hrText, wiz, rulesPlan, projectOutlook, outlookWeek, buildPlan, applyWeekPlan, makeWeekly, maybeWeekly, weeklyDue, planContext, proposalSheet, view, run, parse, onBusy, matchActs, render, persist, place, setBusy(wk, events) { state.local.busy[wk] = {at: Date.now(), events}; saveLocal(); onBusy(wk); }, setActs(list) { state.local.acts = {at: Date.now(), list, linked: true}; saveLocal(); for (const wk of Object.keys(state.weeks)) { const week = state.weeks[wk], before = snapshot(week), lines = matchActs(wk, week); if (lines.length) commit(wk, week, before, 'Garmin', lines); } render(); }};
 
 // Back from Oura's consent screen: #oura=ok or #oura=<reason>.
 const ouraBack = (location.hash.match(/oura=([\w-]+)/) || [])[1];
